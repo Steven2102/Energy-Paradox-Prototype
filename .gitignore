@@ -1,0 +1,29 @@
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Household data ----------------------------------------------------------
+# Real bills never enter version control. Git history is permanent: a PDF
+# committed today is still in the history after it is deleted, and still there
+# if this repository is ever made public.
+data/bills/
+*.pdf
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Editor / OS -------------------------------------------------------------
+.DS_Store
+.idea/
+*.swp
+
+# --- Build output ------------------------------------------------------------
+output/
+*.log

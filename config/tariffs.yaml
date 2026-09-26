@@ -1,0 +1,116 @@
+# Tariff structures observed in the sample bills.
+# All rates INCLUDE GST, as printed on the bill.
+# Source: GloBird Energy "BOOST" plan, Energex network (SEQ).
+# Extracted 2026-09-18 from 18 redacted bills, 2025-04-28 to 2026-08-30.
+
+globird_boost_2026:
+  retailer: GloBird Energy
+  network: Energex
+  plan: BOOST
+  effective_from: 2026-01-01
+  observed_until: 2026-08-30
+  gst_included: true
+  daily_charge_aud: 1.37500
+  windows:
+    peak:
+      hours: [[16, 21]]          # 16:00-21:00 every day
+      rate_aud_per_kwh: 0.43780
+    offpeak:
+      hours: [[9, 16]]           # 09:00-16:00 every day  <- cheapest general rate
+      rate_aud_per_kwh: 0.25850
+    shoulder:
+      hours: [[21, 24], [0, 9]]  # 21:00-09:00 every day
+      rate_aud_per_kwh: 0.28050
+  controlled_load:
+    # Separate circuit, not addressable by a household battery.
+    availability: all_hours
+    rate_aud_per_kwh: 0.20460
+  feed_in_tariff_aud_per_kwh: null   # no solar on this account; not printed
+
+globird_boost_2025:
+  retailer: GloBird Energy
+  network: Energex
+  plan: BOOST
+  effective_from: 2025-04-28     # earliest bill in the sample
+  effective_until: 2025-12-31
+  gst_included: true
+  daily_charge_aud: 1.19900
+  windows:
+    peak:
+      hours: [[16, 21]]
+      rate_aud_per_kwh: 0.34100
+    offpeak:
+      hours: [[9, 16]]
+      rate_aud_per_kwh: 0.21120
+    shoulder:
+      hours: [[21, 24], [0, 9]]
+      rate_aud_per_kwh: 0.21120   # same as offpeak in 2025; they diverged in 2026
+  controlled_load:
+    availability: all_hours
+    rate_aud_per_kwh: 0.22000
+  feed_in_tariff_aud_per_kwh: null
+
+# Year-on-year rate change, 2025 -> 2026:
+#   peak      +28.4%
+#   offpeak   +22.4%
+#   shoulder  +32.8%
+#   ctrl load  -7.0%
+#   daily     +14.7%
+# A price path assumption of "CPI" understates what this household has seen.
+
+# ---------------------------------------------------------------------------
+# GENERAL SCHEMA NOTE
+#
+# Every tariff is a list of components. A flat tariff is not a special case;
+# it is a window list of length one. The component types below must all exist
+# in the data model from the start, even if not all are implemented -- a
+# charge type that has no slot cannot be detected, and an undetected charge
+# type is silently dropped from someone's bill.
+#
+#   energy_windows   $/kWh by time of day        implemented
+#   daily_charge     $/day                       implemented
+#   controlled_load  $/kWh, separate circuit     implemented (excluded from battery)
+#   feed_in          $/kWh exported, may vary    implemented (scalar); windows: schema only
+#   demand           $/kW on peak half-hourly    SCHEMA ONLY -- must be declared if present
+#   block            $/kWh after N kWh           SCHEMA ONLY -- must be declared if present
+#   seasonal         rates differing by month    SCHEMA ONLY -- must be declared if present
+#
+# "SCHEMA ONLY" means: parse it, record it, and if a user's bill contains it,
+# say plainly that this version does not model it. Never ignore it silently.
+# ---------------------------------------------------------------------------
+
+generic_flat_2026:
+  network: Energex
+  plan: indicative SEQ flat retail offer, 2025-26. Not a specific product.
+  gst_included: true
+  daily_charge_aud: 1.20000
+  windows:
+    all_day:
+      hours: [[0, 24]]
+      rate_aud_per_kwh: 0.30000
+  controlled_load: null
+  feed_in_tariff_aud_per_kwh: 0.05000
+
+generic_demand_2026:
+  network: Energex
+  plan: indicative SEQ demand tariff, 2025-26. Not a specific product.
+  gst_included: true
+  daily_charge_aud: 1.05000
+  windows:
+    peak:
+      hours: [[16, 21]]
+      rate_aud_per_kwh: 0.22000
+    offpeak:
+      hours: [[9, 16]]
+      rate_aud_per_kwh: 0.14000
+    shoulder:
+      hours: [[21, 24], [0, 9]]
+      rate_aud_per_kwh: 0.17000
+  controlled_load:
+    availability: all_hours
+    rate_aud_per_kwh: 0.20460
+  demand:
+    charge_aud_per_kw_month: 7.00
+    measured_over: [[16, 21]]      # highest half-hourly demand in this window
+    reset: monthly
+  feed_in_tariff_aud_per_kwh: null

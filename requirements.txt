@@ -1,0 +1,15 @@
+# Unpinned while the shape of the project is still moving.
+# Run `pip freeze > requirements.txt` once stage 4 works, and pin from there.
+
+pandas
+pyyaml
+python-dotenv
+pytest
+
+# Stage 6 onwards — install only the provider you chose.
+# anthropic
+# openai
+# google-genai
+
+# Stage 7 — pick whatever gets a working UI fastest.
+# streamlit

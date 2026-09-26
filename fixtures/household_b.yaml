@@ -1,0 +1,73 @@
+# SYNTHETIC household. Not a real bill. Constructed deliberately to contrast
+# with fixtures/reference_household.yaml on every axis that could be overfitted.
+#
+#   reference_household.yaml        household_b.yaml
+#   time-of-use   ->  flat
+#   no solar      ->  6.6 kW solar
+#   winter peak   ->  summer peak
+#   7359 kWh/yr   ->  4800 kWh/yr
+#   controlled load   none
+#   4 occupants   ->  2 occupants, both out weekdays
+#
+# Rates are indicative SEQ retail values for 2025-26, not a specific offer.
+# If a test passes for reference_household.yaml and fails here, the code is fitted to one
+# household.
+
+meta:
+  source: synthetic — constructed as a contrast case, not derived from a bill
+  purpose: generalisation test
+  created: 2026-09-18
+
+from_bill:
+  retailer: null
+  network: Energex
+  plan: synthetic flat
+  tariff_ref: generic_flat_2026
+  has_solar: true
+  solar_kw: 6.6
+  has_controlled_load: false
+
+  annual_kwh_total: 4800          # grid import + self-consumed solar
+  annual_kwh_by_window:
+    all_day: 4800                 # a flat tariff has ONE window
+  # NOTE: a flat-tariff bill gives magnitude but NO shape. The window split
+  # that reference_household.yaml gets for free does not exist here. The generator must lean
+  # much harder on the form, and the result carries more uncertainty. The
+  # system should say so.
+
+  annual_solar_export_kwh: 6900
+  annual_cost_aud_at_2026_rates: 1264.00
+
+  seasonality:
+    peak_period: summer
+    highest_daily_kwh: 19.5       # January, air conditioning
+    lowest_daily_kwh: 9.1         # July
+    ratio: 2.1
+    driver: afternoon and evening air conditioning
+
+from_form:
+  household_size: 2
+  occupancy_pattern: both_out_weekdays
+  has_aircon: true
+  aircon_use: summer_evenings
+  controlled_load_appliance: none
+  has_pool: false
+  roof_orientation: north
+  roof_shading: none
+  usable_roof_area_m2: 40
+  years_expected_in_home: 12
+  max_upfront_spend_aud: 15000
+  considering_ev: false
+  motivation: [lower_bill, independence]
+
+notes:
+  - >
+    The expected recommendation here is the OPPOSITE of reference_household.yaml: solar is
+    already installed, the household is out during generation hours, so most
+    output is exported at a low feed-in tariff while evening consumption is
+    bought back at the full rate. That is the classic case where a battery
+    DOES pay. If the engine returns "not now" for both households, it is not
+    discriminating — it is echoing whatever it was tuned on.
+  - >
+    Charge opportunity cost here is the feed-in tariff forgone, not an offpeak
+    import rate. Both paths must work.

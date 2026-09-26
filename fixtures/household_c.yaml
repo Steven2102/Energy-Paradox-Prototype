@@ -1,0 +1,85 @@
+# SYNTHETIC household. Not a real bill.
+#
+# Exists for one reason: this household is on a DEMAND tariff, where a large
+# part of the bill is a $/kW charge on the single highest half-hourly demand
+# in the peak window each month — not a $/kWh charge on energy.
+#
+# A battery is often MORE valuable here than on any energy tariff, because
+# shaving 3 kW off one half-hour a month cuts the charge directly. A system
+# that models only energy will badly under-recommend batteries for these
+# households, and will do so silently.
+#
+# If demand charges are not implemented by the showcase, this fixture is the
+# test that the system DETECTS the unmodelled component and says so, rather
+# than returning a confident number that ignores a third of the bill.
+
+meta:
+  source: synthetic — demand tariff contrast case
+  purpose: honest-degradation test
+  created: 2026-09-18
+
+from_bill:
+  retailer: null
+  network: Energex
+  plan: synthetic demand
+  tariff_ref: generic_demand_2026
+  has_solar: false
+  has_controlled_load: true
+
+  annual_kwh_total: 9200
+  annual_kwh_by_window:
+    peak: 2100
+    offpeak: 3400
+    shoulder: 2200
+    controlled_load: 1500
+
+  monthly_peak_demand_kw:          # highest half-hourly demand, peak window
+    jan: 7.8
+    feb: 7.4
+    mar: 6.1
+    apr: 4.9
+    may: 4.4
+    jun: 5.2
+    jul: 5.6
+    aug: 5.1
+    sep: 4.7
+    oct: 5.5
+    nov: 6.8
+    dec: 7.6
+  # At $7.00/kW/month this is about $500/yr — a charge no amount of energy
+  # arbitrage modelling will find.
+
+  annual_cost_aud_at_2026_rates: 3180.00
+
+  seasonality:
+    peak_period: summer
+    highest_daily_kwh: 38.0
+    lowest_daily_kwh: 16.5
+    ratio: 2.3
+    driver: ducted air conditioning
+
+from_form:
+  household_size: 5
+  occupancy_pattern: someone_home_most_days
+  has_aircon: true
+  aircon_use: ducted_whole_house
+  controlled_load_appliance: hot_water
+  has_pool: true
+  roof_orientation: north_west
+  roof_shading: partial_afternoon
+  usable_roof_area_m2: 70
+  years_expected_in_home: 20
+  max_upfront_spend_aud: 25000
+  considering_ev: true
+  motivation: [lower_bill, backup_power]
+
+notes:
+  - >
+    Required behaviour if demand charges are unimplemented: the system states
+    that this bill contains a demand component it does not model, gives the
+    energy-only result explicitly labelled as a partial picture, and does not
+    present a payback figure as if it were complete.
+  - >
+    Required behaviour if implemented: peak demand reduction becomes an
+    additive term in the saving, and the recommendation should differ
+    materially from the energy-only result.

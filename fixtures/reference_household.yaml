@@ -1,0 +1,69 @@
+# Reference household, derived from 18 redacted bills (2025-04-28 -> 2026-08-30).
+# This is the fixture every stage of the engine runs against.
+#
+# Two sections, deliberately separated: what the BILL gives you, and what the
+# FORM has to ask. Nothing here is invented.
+
+meta:
+  source: 18 redacted GloBird bills, 13 complete cycles used for annual figures
+  trailing_12m: 2025-09-01 to 2026-08-30   # 364 days = 13 x 28-day cycles
+  extracted: 2026-09-18
+
+# ---------------------------------------------------------------- from the bill
+from_bill:
+  retailer: GloBird Energy
+  network: Energex
+  plan: BOOST
+  tariff_ref: globird_boost_2026
+  has_solar: false
+  has_controlled_load: true
+
+  annual_kwh_total: 7359
+  annual_kwh_by_window:
+    peak: 1569          # 21.3%   4.31 kWh/day   16:00-21:00
+    offpeak: 1745       # 23.7%   4.80 kWh/day   09:00-16:00
+    shoulder: 2087      # 28.4%   5.73 kWh/day   21:00-09:00
+    controlled_load: 1958   # 26.6%   5.38 kWh/day  separate circuit
+
+  annual_cost_aud_as_billed: 2509.59
+  annual_cost_aud_at_2026_rates: 2624.54   # use this as the no-change baseline
+
+  seasonality:
+    peak_period: winter            # NOT summer -- see note below
+    highest_daily_kwh: 34.3        # Aug 2026
+    lowest_daily_kwh: 14.8         # Mar-Apr 2026
+    ratio: 2.3
+    driver: overnight shoulder load (21:00-09:00) in winter months
+
+# ------------------------------------------------------------- must be asked
+# None of this is on the bill. These are the form fields.
+from_form:
+  household_size: 4               # stated by the project lead: 2 adults, 2 children
+  occupancy_pattern: null         # work from home? school hours?
+  has_aircon: null
+  aircon_use: null                # the winter shoulder load needs explaining
+  controlled_load_appliance: null # hot water? pool? both?
+  has_pool: null
+  roof_orientation: null
+  roof_shading: null
+  usable_roof_area_m2: null
+  years_expected_in_home: null
+  max_upfront_spend_aud: null
+  considering_ev: null
+  motivation: null                # bill / independence / backup power
+
+# ------------------------------------------------------------------- warnings
+notes:
+  - >
+    The 2025-12-22 bill contains TWO rate blocks in one billing period, because
+    prices changed on 2026-01-01. Reading only the first block understates that
+    period's consumption by 57% (192 kWh instead of 457 kWh). Any extraction
+    step must sum all blocks and reconcile against the printed "Total Usage".
+  - >
+    Year-on-year variation in the same season is large: Jun-Jul consumption fell
+    34% from 2025 to 2026, while August rose 23%. One year of bills is not a
+    stable baseline. Do not present a single-year projection as precise.
+  - >
+    Controlled load (1958 kWh/yr, 27% of consumption) sits on a separate circuit
+    at the cheapest rate. A household battery cannot serve it. Excluding it,
+    addressable consumption is 5401 kWh/yr.
