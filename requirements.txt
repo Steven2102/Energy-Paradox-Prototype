@@ -1,6 +1,7 @@
 # Unpinned while the shape of the project is still moving.
 # Run `pip freeze > requirements.txt` once stage 4 works, and pin from there.
 
+numpy
 pandas
 pyyaml
 python-dotenv

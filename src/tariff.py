@@ -26,6 +26,8 @@ from datetime import date
 # [start, end) pairs in hours of the day, e.g. ((21, 24), (0, 9)).
 Hours = tuple[tuple[float, float], ...]
 
+SLOTS_PER_DAY = 48  # half-hours
+
 METADATA_KEYS = {
     "retailer", "network", "plan", "gst_included",
     "effective_from", "effective_until", "observed_until",
@@ -128,6 +130,16 @@ def describe_hours(hours: Hours) -> str:
     return ", ".join(f"{clock(start)}–{clock(end)}" for start, end in hours)
 
 
+def window_by_slot(tariff: Tariff) -> tuple[EnergyWindow, ...]:
+    """The energy window each of the day's half-hours falls in, from 00:00.
+    Parsing guarantees there is exactly one."""
+    return tuple(_windows_at(tariff.energy_windows, slot / 2)[0] for slot in range(SLOTS_PER_DAY))
+
+
+def _windows_at(windows: tuple[EnergyWindow, ...], hour: float) -> list[EnergyWindow]:
+    return [window for window in windows if any(start <= hour < end for start, end in window.hours)]
+
+
 # ------------------------------------------------------------------ parsing
 
 def parse_tariff(tariff_id: str, entry: dict) -> Tariff:
@@ -225,9 +237,9 @@ def _parse_hours(where: str, hours: list) -> Hours:
 def _check_windows_cover_the_day(where: str, windows: tuple[EnergyWindow, ...]) -> None:
     """Every half-hour must fall in exactly one energy window. Otherwise some
     consumption would be priced twice, or not at all."""
-    for slot in range(48):
+    for slot in range(SLOTS_PER_DAY):
         t = slot / 2
-        containing = [w.name for w in windows for start, end in w.hours if start <= t < end]
+        containing = [window.name for window in _windows_at(windows, t)]
         if len(containing) != 1:
             raise ValueError(
                 f"{where}: the half-hour from {clock(t)} is in {len(containing)} energy "

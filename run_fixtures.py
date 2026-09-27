@@ -1,4 +1,4 @@
-"""Stage 1 console runner: every fixture through the headline equation.
+"""Console runner: every fixture through the engine.
 
     python run_fixtures.py [--install-date YYYY-MM-DD]
 
@@ -6,9 +6,9 @@ For each household in fixtures/, prints the tariff it is on, its annual
 consumption by window, and the payback calculation with every term shown
 separately, then a one-line-per-household summary.
 
-The dispatch simulation does not exist yet (stage 2), so the three terms it
-will produce -- kwh_shifted, r_out and r_in -- are hardcoded below. No payback
-printed here is a finding.
+kwh_shifted, r_out and r_in come from the half-hourly dispatch simulation.
+Until the stage 3 generator exists it runs on a provisional load shape (see
+src/generator.py), so every payback printed here is provisional too.
 
 The rebate depends on the install date, which defaults to today. Pass
 --install-date to reproduce a run exactly.
@@ -20,40 +20,11 @@ from datetime import date
 
 from src import finance
 from src.config import Config, load_config
+from src.dispatch import simulate
 from src.finance import Payback
+from src.generator import household_year
 from src.profile import HouseholdProfile, check_matches_tariff, load_fixtures
 from src.tariff import UNMODELLED, Tariff, describe_hours, unmodelled_components
-
-# TODO(stage 2): delete PLACEHOLDER_DISPATCH and take kwh_shifted, r_out and
-# r_in from the dispatch simulation.
-#
-# These are the only household-specific numbers in the pipeline, and they
-# exist only so that it runs end to end before dispatch does. Each is read off
-# the fixture's own bill figures and tariff by the rule beside it, for the
-# default 10 kWh battery; none was tuned to produce a particular answer. They
-# are deliberately crude -- they ignore power limits and day-to-day variation,
-# which is what the simulation is for -- and nothing recomputes them if the
-# battery or a tariff in config/ changes.
-PLACEHOLDER_DISPATCH = {
-    "reference_household": {
-        "kwh_shifted": 1569,  # all peak-window consumption, 4.3 kWh/day
-        "r_out": 0.4378,      # peak rate: discharges 16:00-21:00
-        "r_in": 0.2585,       # offpeak rate: charges from the grid 09:00-16:00
-        "basis": "grid-charged in offpeak; covers all peak-window consumption",
-    },
-    "household_b": {
-        "kwh_shifted": 2880,  # 60% of 4,800 kWh, assumed outside solar hours (out on weekdays)
-        "r_out": 0.30,        # the flat rate
-        "r_in": 0.05,         # feed-in tariff forgone: charges from solar surplus
-        "basis": "solar-charged; covers the 60% of consumption assumed to fall outside solar hours",
-    },
-    "household_c": {
-        "kwh_shifted": 2100,  # all peak-window consumption, 5.8 kWh/day
-        "r_out": 0.22,        # peak rate: discharges 16:00-21:00
-        "r_in": 0.14,         # offpeak rate: charges from the grid 09:00-16:00
-        "basis": "grid-charged in offpeak; covers all peak-window consumption",
-    },
-}
 
 RULE = "=" * 88
 
@@ -71,8 +42,7 @@ def main(argv: list[str] | None = None) -> None:
         print_tariff(tariff)
         print_consumption(profile, tariff)
         result = print_payback(profile, tariff, config, args.install_date)
-        if result is not None:
-            results.append((profile, tariff, result))
+        results.append((profile, tariff, result))
 
     print_summary(results)
 
@@ -90,9 +60,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def print_banner(config: Config, install_date: date) -> None:
-    print("Stage 1 engine skeleton")
-    print("  kwh_shifted, r_out and r_in are hardcoded placeholders until the dispatch")
-    print("  simulation exists (stage 2). No payback printed here is a finding.")
+    print("Stage 2: dispatch simulation")
+    print("  kwh_shifted, r_out and r_in come from a half-hourly dispatch of one year, run on")
+    print("  a provisional load shape until stage 3: each window's annual kWh spread evenly")
+    print("  over the year, and solar as the same daily curve every day.")
     print(f"  Install date {install_date}, which sets the rebate (change with --install-date).")
     unverified = []
     if not config.batteries.verified:
@@ -164,16 +135,20 @@ def print_consumption(profile: HouseholdProfile, tariff: Tariff) -> None:
 
 def print_payback(
     profile: HouseholdProfile, tariff: Tariff, config: Config, install_date: date
-) -> Payback | None:
+) -> Payback:
     batteries = config.batteries
     size_kwh = batteries.default_size_kwh
     print(f"\nPayback  {size_kwh:g} kWh battery (default_size_kwh), {batteries.power_kw:g} kW, "
           f"{batteries.round_trip_efficiency:.0%} round trip, installed {install_date}")
 
-    placeholder = PLACEHOLDER_DISPATCH.get(profile.name)
-    if placeholder is None:
-        print("  skipped: no placeholder dispatch terms for this fixture (PLACEHOLDER_DISPATCH)")
-        return None
+    dispatched = simulate(
+        household_year(profile, tariff, config.assumptions.solar_daylight_hours),
+        capacity_kwh=size_kwh,
+        power_kw=batteries.power_kw,
+        efficiency=batteries.round_trip_efficiency,
+        marginal_throughput_cost_aud_per_kwh=batteries.marginal_throughput_cost_aud_per_kwh,
+        horizon_intervals=config.assumptions.dispatch_horizon_intervals,
+    )
 
     cost = batteries.cost_model
     battery_cost = finance.battery_cost_aud(size_kwh, cost.fixed_aud, cost.variable_aud_per_kwh)
@@ -195,33 +170,45 @@ def print_payback(
         demand_note = "NOT MODELLED: not calculated, rather than nothing"
 
     r = finance.payback(
-        kwh_shifted=placeholder["kwh_shifted"],
-        r_out=placeholder["r_out"],
-        r_in=placeholder["r_in"],
+        kwh_shifted=dispatched.kwh_shifted,
+        r_out=dispatched.r_out,
+        r_in=dispatched.r_in,
         efficiency=batteries.round_trip_efficiency,
         demand_saving=demand_saving,
         battery_cost=battery_cost,
         rebate=rebate.rebate_aud,
     )
 
-    print_term("kwh_shifted", f"{r.kwh_shifted:,.0f}", "kWh/yr", "PLACEHOLDER")
-    print_term("r_out", f"{r.r_out:.5f}", "$/kWh", "PLACEHOLDER")
-    print_term("r_in", f"{r.r_in:.5f}", "$/kWh", "PLACEHOLDER")
+    undefined = "undefined"
+    print_term("kwh_shifted", f"{r.kwh_shifted:,.0f}", "kWh/yr", "dispatch")
+    print_term("r_out", undefined if r.r_out is None else f"{r.r_out:.5f}", "$/kWh", "dispatch")
+    print_term("r_in", undefined if r.r_in is None else f"{r.r_in:.5f}", "$/kWh", "dispatch")
     print_term("efficiency", f"{r.efficiency:.2f}", "", "config/batteries.yaml")
     print_term("demand_saving", f"{r.demand_saving:,.2f}", "$/yr", demand_note)
     print_term("battery_cost", f"{r.battery_cost:,.2f}", "$",
                f"{cost.fixed_aud:,.0f} + {cost.variable_aud_per_kwh:,.0f} × {size_kwh:g} kWh"
                "   config/batteries.yaml")
     print_term("rebate", f"{r.rebate:,.2f}", "$", "worked below   config/incentives.yaml")
-    print(f"  placeholder basis: {placeholder['basis']}")
+    from_solar = dispatched.charge_solar.sum()
+    from_grid = dispatched.charge_grid.sum()
+    print(f"  dispatch: charged {from_solar + from_grid:,.0f} kWh ({from_solar:,.0f} from solar "
+          f"surplus, {from_grid:,.0f} from the grid)")
+    print(f"            to deliver {r.kwh_shifted:,.0f} kWh; at most "
+          f"{dispatched.stored.max():.1f} kWh held at once")
+    print(f"            moving only kWh whose margin beats the "
+          f"{batteries.marginal_throughput_cost_aud_per_kwh * 100:.1f} c/kWh wear cost"
+          "   config/batteries.yaml")
 
     k = f"{r.kwh_shifted:,.0f}"
     d = f"{r.demand_saving:,.2f}"
     print()
     print("  annual_saving = kwh_shifted × (r_out − r_in / efficiency) + demand_saving")
-    print(f"                = {k} × ({r.r_out:.5f} − {r.r_in:.5f} / {r.efficiency:.2f}) + {d}")
-    print(f"                = {k} × ({r.r_out:.5f} − {r.r_in_after_losses:.5f}) + {d}")
-    print(f"                = {k} × {r.saving_per_kwh:.5f} + {d}")
+    if r.kwh_shifted > 0:
+        print(f"                = {k} × ({r.r_out:.5f} − {r.r_in:.5f} / {r.efficiency:.2f}) + {d}")
+        print(f"                = {k} × ({r.r_out:.5f} − {r.r_in_after_losses:.5f}) + {d}")
+        print(f"                = {k} × {r.saving_per_kwh:.5f} + {d}")
+    else:
+        print(f"                = 0 + {d}   (no earlier energy was ever cheaper than importing)")
     print(f"                = {money(r.annual_saving)} per year")
 
     bands = " + ".join(f"{kwh:g} × {share:.2f}" for kwh, share in rebate.bands if kwh > 0)
@@ -261,7 +248,7 @@ def print_term(name: str, value: str, unit: str, source: str) -> None:
 def print_summary(results: list[tuple[HouseholdProfile, Tariff, Payback]]) -> None:
     print()
     print(RULE)
-    print("Summary (placeholder dispatch terms: not results)")
+    print("Summary (dispatch on the provisional load shape)")
     print(f"  {'household':<21}{'tariff':<20}{'windows':>7}  {'solar':<8}"
           f"{'saving/yr':>11}{'payback':>10}")
     for profile, tariff, r in results:

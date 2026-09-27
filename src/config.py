@@ -37,6 +37,8 @@ class Batteries:
     default_size_kwh: float
     power_kw: float  # continuous charge and discharge
     power_kw_range: Range
+    marginal_throughput_cost_aud_per_kwh: float  # wear from delivering one more kWh
+    marginal_throughput_cost_range: Range
     warranty_years: float
     verified: bool
 
@@ -74,10 +76,23 @@ class Incentives:
 
 
 @dataclass(frozen=True)
+class Assumptions:
+    """config/assumptions.yaml: modelling choices, estimated rather than measured."""
+
+    dispatch_horizon_hours: float
+    solar_daylight_hours: Range  # (sunrise, sunset)
+
+    @property
+    def dispatch_horizon_intervals(self) -> int:
+        return round(self.dispatch_horizon_hours * 2)  # half-hours
+
+
+@dataclass(frozen=True)
 class Config:
     tariffs: dict[str, Tariff]
     batteries: Batteries
     incentives: Incentives
+    assumptions: Assumptions
 
 
 def load_config(config_dir: Path = CONFIG_DIR) -> Config:
@@ -86,6 +101,7 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
         tariffs={tariff_id: parse_tariff(tariff_id, entry) for tariff_id, entry in tariffs.items()},
         batteries=parse_batteries(_read(config_dir / "batteries.yaml")),
         incentives=parse_incentives(_read(config_dir / "incentives.yaml")),
+        assumptions=parse_assumptions(_read(config_dir / "assumptions.yaml")),
     )
 
 
@@ -104,12 +120,19 @@ def parse_batteries(raw: dict) -> Batteries:
         default_size_kwh=float(raw["default_size_kwh"]),
         power_kw=float(raw["power_kw"]),
         power_kw_range=_range("power_kw_range", raw["power_kw_range"]),
+        marginal_throughput_cost_aud_per_kwh=float(raw["marginal_throughput_cost_aud_per_kwh"]),
+        marginal_throughput_cost_range=_range(
+            "marginal_throughput_cost_range", raw["marginal_throughput_cost_range"]
+        ),
         warranty_years=float(raw["warranty_years"]),
         verified=raw.get("verified") is True,
     )
     _check_within("round_trip_efficiency", batteries.round_trip_efficiency,
                   "round_trip_efficiency_range", batteries.round_trip_efficiency_range)
     _check_within("power_kw", batteries.power_kw, "power_kw_range", batteries.power_kw_range)
+    _check_within("marginal_throughput_cost_aud_per_kwh",
+                  batteries.marginal_throughput_cost_aud_per_kwh,
+                  "marginal_throughput_cost_range", batteries.marginal_throughput_cost_range)
     _check_within("default_size_kwh", batteries.default_size_kwh,
                   "cost_model.valid_range_kwh", batteries.cost_model.valid_range_kwh)
     return batteries
@@ -153,6 +176,16 @@ def parse_incentives(raw: dict) -> Incentives:
     _check_within("stc_price_aud", incentives.stc_price_aud,
                   "stc_price_range_aud", incentives.stc_price_range_aud)
     return incentives
+
+
+def parse_assumptions(raw: dict) -> Assumptions:
+    horizon = float(raw["dispatch_horizon_hours"])
+    if horizon <= 0 or not float(horizon * 2).is_integer():
+        raise ValueError("dispatch_horizon_hours must be positive, in whole half-hours")
+    sunrise, sunset = _range("solar_daylight_hours", raw["solar_daylight_hours"])
+    if not 0 <= sunrise < sunset <= 24:
+        raise ValueError("solar_daylight_hours must lie within 0-24, sunrise before sunset")
+    return Assumptions(dispatch_horizon_hours=horizon, solar_daylight_hours=(sunrise, sunset))
 
 
 def _range(where: str, pair: list) -> Range:

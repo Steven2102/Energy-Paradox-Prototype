@@ -42,6 +42,12 @@ power_kw_range: [3.5, 11.5]    # product-dependent; a catalogue replaces this la
 # that determines demand-charge shaving, so household_c cannot be modelled
 # without it.
 
+marginal_throughput_cost_aud_per_kwh: 0.02
+marginal_throughput_cost_range: [0.005, 0.05]
+# Degradation attributable to one delivered kWh. Not the levelised capital cost
+# (that is sunk once the battery is bought) — this is the cost of cycling an
+# owned battery harder. Dispatch must clear this margin before it moves energy.
+
 warranty_years: 10
 # Relevant to any payback longer than this: the asset does not survive its own
 # break-even. Worth stating in `not_priced` when payback_years > warranty_years.

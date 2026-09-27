@@ -206,7 +206,10 @@ fixtures/
   household_c.yaml    # synthetic: demand tariff -- declaration test
 data/
   bills/              # sample bills, redacted
+  bills_extracted.csv # per-bill window totals from the 18 reference bills
   brisbane_tmy.csv    # irradiance, if solar is modelled
+tools/
+  parse_globird.py    # GloBird text-PDF parser; produced bills_extracted.csv
 src/
   tariff.py           # tariff data model: a list of charge components
   config.py           # config/ -> typed tariffs, battery costs, rebate schedule

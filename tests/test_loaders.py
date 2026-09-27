@@ -40,6 +40,7 @@ def test_sourced_config_is_verified_and_keeps_its_ranges():
     assert batteries.round_trip_efficiency_range == (0.85, 0.92)
     assert batteries.cost_model.valid_range_kwh == (5.0, 20.0)
     assert batteries.power_kw_range == (3.5, 11.5)
+    assert batteries.marginal_throughput_cost_range == (0.005, 0.05)
 
 
 def test_a_flat_tariff_is_one_window_covering_the_day():

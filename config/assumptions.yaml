@@ -1,0 +1,13 @@
+# Modelling assumptions: choices the engine needs that neither the bill nor the
+# form supplies. Estimated rather than measured, so any result they shape must
+# say so.
+
+dispatch_horizon_hours: 24
+# How far ahead the battery plans. Energy stored now is only ever set against
+# consumption in the next 24 hours, roughly the day ahead a home battery's
+# controller plans for.
+
+solar_daylight_hours: [6, 18]
+# PROVISIONAL until solar is modelled from irradiance (data/brisbane_tmy.csv).
+# Generation is a half-sine between these hours, the same every day, scaled so
+# that the simulated export without a battery equals the export on the bill.

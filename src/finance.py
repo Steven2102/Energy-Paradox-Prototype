@@ -83,16 +83,16 @@ class Payback:
 
     # Inputs
     kwh_shifted: float        # kWh/yr the battery delivered
-    r_out: float              # $/kWh the delivered energy was worth
-    r_in: float               # $/kWh it cost to store
+    r_out: float | None       # $/kWh the delivered energy was worth; None if nothing moved
+    r_in: float | None        # $/kWh it cost to store; None if nothing moved
     efficiency: float         # round trip, 0-1
     demand_saving: float      # $/yr from a lower peak demand
     battery_cost: float       # $ installed, before rebate
     rebate: float             # $
 
-    # Steps
-    r_in_after_losses: float  # $/kWh: r_in / efficiency, the cost of storing enough to deliver 1 kWh
-    saving_per_kwh: float     # $/kWh: r_out − r_in_after_losses
+    # Steps (the rate steps are None when nothing moved)
+    r_in_after_losses: float | None  # $/kWh: r_in / efficiency, the cost of storing enough to deliver 1 kWh
+    saving_per_kwh: float | None     # $/kWh: r_out − r_in_after_losses
     energy_saving: float      # $/yr: kwh_shifted × saving_per_kwh
     annual_saving: float      # $/yr: energy_saving + demand_saving
     net_cost: float           # $: battery_cost − rebate
@@ -102,8 +102,8 @@ class Payback:
 def payback(
     *,
     kwh_shifted: float,
-    r_out: float,
-    r_in: float,
+    r_out: float | None,
+    r_in: float | None,
     efficiency: float,
     demand_saving: float,
     battery_cost: float,
@@ -113,7 +113,8 @@ def payback(
 
     Every argument is keyword-only and required. demand_saving in particular
     has no default, so a caller must decide it rather than have it silently
-    assumed to be zero.
+    assumed to be zero. r_out and r_in may be None only when kwh_shifted is 0:
+    a battery that moved nothing has no rates.
     """
     if not 0 < efficiency <= 1:
         raise ValueError(f"efficiency must be in (0, 1], got {efficiency}")
@@ -122,9 +123,13 @@ def payback(
     if not 0 <= rebate <= battery_cost:
         raise ValueError(f"rebate must be between 0 and the battery cost, got {rebate}")
 
-    r_in_after_losses = r_in / efficiency
-    saving_per_kwh = r_out - r_in_after_losses
-    energy_saving = kwh_shifted * saving_per_kwh
+    if kwh_shifted > 0:
+        r_in_after_losses = r_in / efficiency
+        saving_per_kwh = r_out - r_in_after_losses
+        energy_saving = kwh_shifted * saving_per_kwh
+    else:
+        r_in_after_losses = saving_per_kwh = None
+        energy_saving = 0.0
     annual_saving = energy_saving + demand_saving
     net_cost = battery_cost - rebate
     # A battery that saves nothing, or loses money, never pays for itself.
