@@ -62,12 +62,22 @@ from_form:
 
 notes:
   - >
-    The expected recommendation here is the OPPOSITE of reference_household.yaml: solar is
-    already installed, the household is out during generation hours, so most
-    output is exported at a low feed-in tariff while evening consumption is
-    bought back at the full rate. That is the classic case where a battery
-    DOES pay. If the engine returns "not now" for both households, it is not
-    discriminating — it is echoing whatever it was tuned on.
+    No fixture reaches battery_now at current prices, and this one is no
+    exception. That is a finding, not a modelling failure. Solar is already
+    installed and the household is out during generation hours, so most output
+    is exported at a low feed-in tariff while evening consumption is bought
+    back at the full rate: the strongest case for a battery of the three. Yet
+    at $8,806 net (sourced prices, 2026-09-26) the payback is 12.5 years at the
+    placeholder dispatch value and roughly 14-16 at realistic ones, against a
+    10-year warranty and a 12-year expected stay. Only the ceiling gets inside
+    the warranty, at 9.2 years, and it means displacing the entire 3,903 kWh
+    annual import implied by the bill, which is physically impossible.
+  - >
+    This is the fixture expected to reach battery_now first under a cost or
+    tariff change. Until then it shares battery_not_yet with
+    reference_household.yaml, but not the reason: here the binding constraint
+    is import volume, there it is evening demand. Identical labels are
+    acceptable; identical reasoning means the engine is not discriminating.
   - >
     Charge opportunity cost here is the feed-in tariff forgone, not an offpeak
     import rate. Both paths must work.

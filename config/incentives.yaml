@@ -1,0 +1,52 @@
+# Federal battery rebate — Cheaper Home Batteries Program (Australia).
+#
+# sourced:  2026-09-26
+# sources:  Solar Choice, "Changes to the Cheaper Home Batteries Program, 1 May 2026"
+#           https://www.solarchoice.net.au/learn/solar-rebates/government-battery-rebate/changes-1-may-2026/
+#           DCCEEW programme page
+#           https://www.dcceew.gov.au/energy/programs/cheaper-home-batteries
+#
+# The rebate is not a dollar figure. It is a number of small-scale technology
+# certificates (STCs), which is a deeming factor multiplied by usable capacity,
+# sold at a market price. Both inputs move, so both are recorded separately.
+
+verified: true
+
+stc_price_aud: 38.00
+# Market price, fluctuates. $38 is the figure the sources use in worked examples.
+# This is the single most volatile input in the whole model — put it in
+# `assumptions` with its range, and in the `revisit_if` sweep.
+stc_price_range_aud: [33.00, 40.00]
+
+deeming_factor_schedule:
+  # Steps down every January and July, reaching 2.1 by end-2030.
+  - from: 2026-05-01
+    until: 2026-12-31
+    factor: 6.8               # rebate ~= $258/kWh at $38/STC   <- current
+  - from: 2027-01-01
+    until: 2027-06-30
+    factor: 5.7               # ~= $217/kWh
+  - from: 2027-07-01
+    until: 2027-12-31
+    factor: 5.2               # ~= $198/kWh
+
+capacity_taper:
+  # Applies to the deeming factor, not to the dollar total.
+  - up_to_kwh: 14
+    share: 1.00
+  - up_to_kwh: 28
+    share: 0.60
+  - up_to_kwh: 50
+    share: 0.15
+
+# rebate_aud = sum over taper bands of
+#              (kWh in band) x share x deeming_factor x stc_price_aud
+#
+# Worked check, 10 kWh today: 10 x 1.00 x 6.8 x 38 = $2,584
+#   against the quoted post-rebate price of $8,880 on an $11,400 system,
+#   which implies $2,520 — a 2.5% difference explained by STC price movement.
+#
+# The step-down is a genuine `revisit_if` condition rather than trivia: a
+# household deciding in December 2026 loses roughly $400 on a 10 kWh system by
+# waiting until January. That is one of the few cases where the honest answer
+# is "sooner is better", and the system should be able to find it.

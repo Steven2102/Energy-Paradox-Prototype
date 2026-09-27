@@ -20,6 +20,7 @@ Agreed with the project lead on 17 September. Anything not listed here has not b
 8. **Assumptions live in `config/`**, never hardcoded in logic.
 9. **A charge on the bill that the engine cannot model must be declared, never ignored.** Parse it, name it, state that this version does not price it, and label the result a partial picture. Silently dropping a third of someone's bill and returning a confident payback is the worst failure this system can produce.
 10. **No household-specific constants, anywhere.** If a number was chosen because it made the reference household come out right, it is a bug. Market values go in `config/`; household values come from the bill and the form.
+11. **A recommendation without its tensions, assumptions and revisit conditions is incomplete.** This is the project lead's stated condition for allowing recommendations at all, not a presentation preference. See "What a recommendation is".
 
 ## This must work for households it has never seen
 
@@ -30,10 +31,10 @@ The concrete defence is **three fixtures, and every test runs against all of the
 | Fixture | Tariff | Solar | Peak season | Expected answer |
 |---|---|---|---|---|
 | `reference_household.yaml` | time-of-use, 4 components | no | winter | battery **not now** |
-| `household_b.yaml` | flat, one window | 6.6 kW | summer | battery **worth it** |
+| `household_b.yaml` | flat, one window | 6.6 kW | summer | battery **not now** — first to reach `battery_now` under a cost or tariff change |
 | `household_c.yaml` | demand charge | no | summer | **declare** the unmodelled component |
 
-They disagree on purpose. A recommendation engine tuned to one household returns "not now" for `household_b` as well, and that is immediately visible. If all three cannot pass, the code is fitted to one bill.
+They disagree on purpose — in reasoning, not necessarily in label: the binding constraint differs for each (required test 5). If all three cannot pass, the code is fitted to one bill.
 
 `household_b` and `household_c` are synthetic and labelled as such. Only `reference_household.yaml` comes from real bills.
 
@@ -62,6 +63,74 @@ Everything else exists to produce `kwh_shifted`, `r_out` and `r_in` honestly. A 
 The simulation is **decided, not optional** — it is what makes the shifted-kWh figure defensible, and every counterfactual depends on being able to re-run it.
 
 *Fallback of last resort, only if dispatch is still not working by day 9: estimate `kwh_shifted` from the bill's window totals. Same equation, much weaker — and biased. Throughput is a `min()` of available cheap energy, expensive-window demand and battery capacity, and a minimum of averages always exceeds the average of minimums, so the shortcut systematically **overstates** what a small battery captures and **understates** the value of a larger one. This is observable in the reference household: averaging assigns identical value to every size above 6 kWh, which is an artefact of the method, not a fact. Ask before switching.*
+
+## What a recommendation is
+
+A payback number is not the deliverable. The project lead allowed the system to make
+recommendations on one condition, stated in writing: **provided the basis, the tensions
+and the assumptions stay visible**, and provided the system explains *"unter welchen
+Bedingungen sich die Einschätzung verändert"* — under what conditions the assessment
+changes. A recommendation that omits those is not a smaller version of the deliverable,
+it is a different and lesser artifact: form → payback → fluent explanation is what every
+commercial solar calculator in Australia already does.
+
+`recommend.py` therefore returns a structured object, and the LLM writes prose **from**
+it. Every field is computed. None is written by the model.
+
+```python
+action        # battery_now | battery_not_yet | solar_first | no_action | cannot_assess
+size_kwh      # recommended usable capacity, or None
+
+basis         # every term of the headline equation, named:
+              #   kwh_shifted, r_out, r_in, efficiency,
+              #   annual_saving, demand_saving, battery_cost, rebate, payback_years
+
+near_term     # what this costs and disrupts in year 1
+long_term     # cumulative position by year N, and the crossover year
+not_priced    # what the number deliberately excludes
+assumptions   # name, value, source, date — the ones that actually moved the result
+drivers       # which of the household's stated priorities produced this answer
+revisit_if    # computed thresholds at which `action` changes
+unmodelled    # charges present on the bill that this version does not price (rule 9)
+```
+
+**`revisit_if` is computed, not authored.** For each parameter in a defined sweep set —
+feed-in tariff, rate spread, battery cost, price growth rate, adding solar, adding an EV,
+expected years in the home — re-run the engine until `action` flips, and report the
+threshold. If it does not flip within a plausible range, say that instead. This is the
+same re-run machinery the follow-up chat needs, so it is shared work rather than extra
+work, and it is the cheapest available substitute for genuine over-time support.
+
+**`near_term` and `long_term` are a running cumulative position**, not adjectives. Year 1:
+−$9,000 + $237. Year 10: −$6,630. Crossover: year 38. Contrasting the two is arithmetic,
+and making the contrast concrete is the whole point — the research problem is that
+households weigh an immediate cost against a distant benefit.
+
+**`not_priced` keys off the household's stated motivation.** Backup capability,
+independence from retailer price rises, contribution to evening peak relief, and anything
+in `unmodelled`. A household that said independence matters and is told "not now" on cost
+grounds must be told, in the same breath, that independence is not in that number.
+
+### `solar_first` exists because the honest answer is sometimes not about batteries
+
+The brief covers "solar, batteries, and grid participation", and for a household with no
+PV the useful answer is often that solar pays back far faster than a battery would. A
+system that reports "battery not now" and stops has failed that household, and the
+reference fixture is exactly that case.
+
+A **coarse indicative** solar comparison is enough: capacity × annual yield × a
+self-consumption fraction, against the windows the bill already gives. Label it as
+indicative, do not present it as a precise payback, and use it only to decide whether
+`solar_first` outranks a battery recommendation. Do not build a full PV model for October.
+
+### The decision rule
+
+`battery_now` requires `payback_years` to fall within both the battery's warranty and the
+household's stated `years_expected_in_home`. Failing either gives `battery_not_yet`, and the
+justification must name which one it failed and by how much. The rule is household-specific
+by construction — two households with identical paybacks can get different answers, which
+is the tailoring requirement rather than an inconsistency. Where an untaken option scores
+materially better than a battery — currently only solar — `solar_first` outranks both.
 
 ## Tariffs: a list of components, not a shape
 
@@ -139,18 +208,27 @@ data/
   bills/              # sample bills, redacted
   brisbane_tmy.csv    # irradiance, if solar is modelled
 src/
+  tariff.py           # tariff data model: a list of charge components
+  config.py           # config/ -> typed tariffs, battery costs, rebate schedule
   bill.py             # PDF bill -> structured values
   profile.py          # form answers -> user profile
   generator.py        # window totals + form answers -> load shape
   dispatch.py         # -> kwh_shifted
   finance.py          # the headline equation
-  recommend.py        # recommendation, including "not now"
+  recommend.py        # the structured recommendation object
+  revisit.py          # parameter sweeps -> computed revisit_if thresholds
   explain.py          # LLM justification, from computed values only
   followup.py         # intent classification -> explain or re-run
 tests/
   test_dispatch.py
   test_bill.py
+  test_loaders.py
+  test_finance.py
+  test_rebate.py
+  test_run_fixtures.py
 app.py
+run_fixtures.py       # console runner: every fixture through the engine
+pytest.ini            # puts the repo root on the test import path
 docs/
   background.md       # earlier brainstorming. NOT specification. Do not build from it.
 ```
@@ -169,9 +247,11 @@ For bill extraction:
 
 Against overfitting — these are what stop the engine learning one household:
 
-5. **The three fixtures produce materially different recommendations.** If `reference_household.yaml` and `household_b.yaml` both return "not now", the engine is not discriminating.
+5. **The engine discriminates.** Across the three fixtures, payback spans at least a 3× range and the binding constraint differs — evening demand for the reference household, import volume for `household_b`, an unpriced charge for `household_c`. At least one fixture must reach `battery_now` somewhere inside its `revisit_if` sweep range. Identical labels are acceptable; identical reasoning is not.
 6. **`household_c.yaml` triggers the unmodelled-component declaration** while demand charges are unimplemented, and stops triggering it when they are.
-7. **Monotonicity.** Each of these must move the result in the stated direction, on every fixture: more consumption in the expensive window → more shifted; a wider rate spread → shorter payback; a longer expected stay → more favourable; a lower feed-in tariff → a battery looks better where solar exists. These are cheap to write and they catch sign errors and inverted comparisons that the balance test cannot see.
+7. **No recommendation ships incomplete.** Every returned object has a non-empty `revisit_if`, `assumptions` and `not_priced`, and every figure in `basis` is populated. A recommendation missing any of them fails, rather than rendering with a blank section.
+8. **`revisit_if` thresholds are real.** Re-running the engine at the reported threshold must actually produce the stated change of `action`. This catches a sweep that reports a number without verifying it.
+9. **Monotonicity.** Each of these must move the result in the stated direction, on every fixture: more consumption in the expensive window → more shifted; a wider rate spread → shorter payback; a longer expected stay → more favourable; a lower feed-in tariff → a battery looks better where solar exists. These are cheap to write and they catch sign errors and inverted comparisons that the balance test cannot see.
 
 ## The follow-up chat
 
@@ -182,7 +262,7 @@ Free text on the surface, a closed set of intents underneath. The LLM classifies
 | Intent | Behaviour |
 |---|---|
 | **Explain** — "why 15 years?", "what did you assume about my evenings?" | Answer from the existing results object. No recomputation. |
-| **Counterfactual** — "what if I get an EV?", "what about 13 kWh?" | Change the named parameter, **re-run the engine**, answer from the new results. Both the old and the new figure must appear in the answer. |
+| **Counterfactual** — "what if I get an EV?", "what about 13 kWh?" | Change the named parameter, **re-run the engine**, answer from the new results. Both the old and the new figure must appear in the answer. Shares its machinery with `revisit.py`. |
 | **Out of scope** — retailers, brands, anything not modelled | Decline, and say why it cannot be answered. |
 
 Counterfactual parameters are a **closed set defined in code** — add an EV, add solar, change battery size, change tariff type, change electricity price growth. A question that maps to nothing in that set is out of scope.
@@ -201,15 +281,16 @@ Considered during planning and deliberately excluded. If you find these describe
 - Neighbourhood comparison or feeder-level views
 - **Conversational intake** — the profile comes from **form fields**, not a chat flow. (This concerns *intake* only. The follow-up chat *after* the recommendation is in scope — see above.)
 - Open-ended chat — follow-ups resolve to the closed intent set or are declined
-- Break-even presented as a distribution, multi-objective size sweeps, priority weighting
+- Break-even presented as a distribution; multi-objective size optimisation; numeric priority weighting that feeds the calculation. (Distinct from two things that *are* in scope: the single-parameter threshold sweeps behind `revisit_if`, and `drivers`, which only names which stated priority the answer turns on and applies no weights.)
 - Model training or fine-tuning of any kind
 
 ## Build order
 
 1. Engine skeleton — all three fixtures, the equation, console output. No UI, no LLM.
-2. Dispatch — producing `kwh_shifted`, `r_out` and `r_in`, with tests 1–3 and 7.
+2. Dispatch — producing `kwh_shifted`, `r_out` and `r_in`, with tests 1–3 and 9.
 3. Generator — distribute within window totals; handle the flat-tariff no-shape case.
-4. Recommendation, including the "not now" path and the declaration path. Tests 5–6.
+4. Recommendation — the full object from "What a recommendation is", including the
+   `battery_not_yet`, `solar_first` and declaration paths. Tests 5–8.
 5. Bill parsing — registry of extractors, LLM fallback. Test 4 applies.
 6. LLM justification from computed values.
 7. Web app: upload, question fields, results.

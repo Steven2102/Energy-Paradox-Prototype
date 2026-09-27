@@ -30,6 +30,13 @@ pip install -r requirements.txt
 cp .env.example .env        # add an API key from stage 6 onwards
 ```
 
+## Run
+
+```bash
+python run_fixtures.py      # every fixture through the engine, printed to the console
+pytest
+```
+
 ## Layout
 
 ```
@@ -48,10 +55,10 @@ Three households, which disagree on purpose:
 | Fixture | Tariff | Solar | Peak season | Expected |
 |---|---|---|---|---|
 | `reference_household.yaml` | time-of-use, 4 components | no | winter | battery **not now** |
-| `household_b.yaml` | flat, one window | 6.6 kW | summer | battery **worth it** |
+| `household_b.yaml` | flat, one window | 6.6 kW | summer | battery **not now** — first to reach `battery_now` under a cost or tariff change |
 | `household_c.yaml` | demand charge | no | summer | **declare** the unmodelled component |
 
-Every test runs against all three. If a change makes the first two agree, the engine has
+Every test runs against all three. If a change makes them reason alike, the engine has
 stopped discriminating and is fitted to one bill.
 
 `reference_household.yaml` is derived from 18 real redacted bills. The other two are

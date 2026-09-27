@@ -1,0 +1,47 @@
+# Battery cost model — Australian residential, installed, GST inclusive.
+#
+# sourced:  2026-09-26
+# source:   Solar Calculator Australia, battery price guide 2026
+#           https://solarcalculator.com.au/battery-storage/price/
+#           Quoted pre-rebate installed: 10 kWh $11,400 · 13.5 kWh $13,900
+#
+# Those two points fit a fixed + variable model, which is why a flat $/kWh
+# misprices small systems (see CLAUDE.md, domain facts):
+#     slope     = (13900 - 11400) / (13.5 - 10) = $714.29 per kWh
+#     intercept = 11400 - 714.29 x 10           = $4,257
+#
+# Re-derive rather than edit these two numbers independently: they are a fitted
+# pair, and changing one alone silently changes the implied other.
+
+verified: true
+
+cost_model:
+  basis: installed, pre-rebate, GST inclusive
+  fixed_aud: 4250              # inverter, labour, switchboard work — size independent
+  variable_aud_per_kwh: 714
+  valid_range_kwh: [5, 20]     # fitted from two points in this range; do not extrapolate far
+
+  # Sanity checks the fit must reproduce:
+  #   10.0 kWh -> $11,390  (quoted $11,400)
+  #   13.5 kWh -> $13,889  (quoted $13,900)
+
+round_trip_efficiency: 0.90
+round_trip_efficiency_range: [0.85, 0.92]
+# AC-coupled systems sit at the lower end once inverter losses
+# are counted; 0.90 is the commonly quoted figure and the optimistic end of
+# realistic. Surface the range in `assumptions` rather than hiding the choice.
+
+default_size_kwh: 10
+# Only a starting point for comparison. For the reference household, peak-window
+# consumption averages 4.3 kWh/day, so capacity above ~6 kWh has nothing left to
+# shift — see "battery value is often demand-limited" in CLAUDE.md.
+
+power_kw: 5.0                  # continuous charge and discharge, ~0.5C for 10 kWh
+power_kw_range: [3.5, 11.5]    # product-dependent; a catalogue replaces this later
+# Power rarely binds on energy arbitrage at this size, but it is the only thing
+# that determines demand-charge shaving, so household_c cannot be modelled
+# without it.
+
+warranty_years: 10
+# Relevant to any payback longer than this: the asset does not survive its own
+# break-even. Worth stating in `not_priced` when payback_years > warranty_years.
