@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from src.tariff import Tariff, parse_tariff
+from src.tariff import SLOTS_PER_DAY, Tariff, clock, parse_tariff
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
@@ -76,11 +76,37 @@ class Incentives:
 
 
 @dataclass(frozen=True)
+class ShapeBlock:
+    """A block of hours and its share of the day's use, spread evenly within it."""
+
+    hours: tuple[float, float]  # [start, end)
+    share: float
+    share_range: Range | None
+
+
+@dataclass(frozen=True)
+class Occupancy:
+    weekday: str  # names of day shapes
+    weekend: str
+
+
+@dataclass(frozen=True)
 class Assumptions:
     """config/assumptions.yaml: modelling choices, estimated rather than measured."""
 
     dispatch_horizon_hours: float
-    solar_daylight_hours: Range  # (sunrise, sunset)
+    dispatch_horizon_hours_range: Range
+    day_shapes: dict[str, tuple[ShapeBlock, ...]]
+    occupancy: dict[str, Occupancy]               # form answer -> shapes; "not_stated" if none
+    aircon_hours: dict[str, tuple[float, float]]  # form answer -> [start, end)
+    solar_latitude_deg: float
+    solar_noon_hour: float
+    solar_june_to_december_ratio: float
+    solar_june_to_december_ratio_range: Range
+    cloudy_day_share: float
+    cloudy_day_share_range: Range
+    cloudy_day_output: float
+    cloudy_day_output_range: Range
 
     @property
     def dispatch_horizon_intervals(self) -> int:
@@ -182,10 +208,85 @@ def parse_assumptions(raw: dict) -> Assumptions:
     horizon = float(raw["dispatch_horizon_hours"])
     if horizon <= 0 or not float(horizon * 2).is_integer():
         raise ValueError("dispatch_horizon_hours must be positive, in whole half-hours")
-    sunrise, sunset = _range("solar_daylight_hours", raw["solar_daylight_hours"])
-    if not 0 <= sunrise < sunset <= 24:
-        raise ValueError("solar_daylight_hours must lie within 0-24, sunrise before sunset")
-    return Assumptions(dispatch_horizon_hours=horizon, solar_daylight_hours=(sunrise, sunset))
+
+    day_shapes = {name: _parse_day_shape(name, blocks) for name, blocks in raw["day_shapes"].items()}
+    occupancy = {answer: Occupancy(weekday=entry["weekday"], weekend=entry["weekend"])
+                 for answer, entry in raw["occupancy"].items()}
+    if "not_stated" not in occupancy:
+        raise ValueError("occupancy: needs a not_stated entry, for forms that leave it blank")
+    for answer, shapes in occupancy.items():
+        for shape in (shapes.weekday, shapes.weekend):
+            if shape not in day_shapes:
+                raise ValueError(f"occupancy {answer!r}: no day shape called {shape!r}")
+
+    assumptions = Assumptions(
+        dispatch_horizon_hours=horizon,
+        dispatch_horizon_hours_range=_range(
+            "dispatch_horizon_hours_range", raw["dispatch_horizon_hours_range"]),
+        day_shapes=day_shapes,
+        occupancy=occupancy,
+        aircon_hours={answer: _hours(f"aircon_hours {answer!r}", pair)
+                      for answer, pair in raw["aircon_hours"].items()},
+        solar_latitude_deg=float(raw["solar_latitude_deg"]),
+        solar_noon_hour=float(raw["solar_noon_hour"]),
+        solar_june_to_december_ratio=float(raw["solar_june_to_december_ratio"]),
+        solar_june_to_december_ratio_range=_range(
+            "solar_june_to_december_ratio_range", raw["solar_june_to_december_ratio_range"]),
+        cloudy_day_share=float(raw["cloudy_day_share"]),
+        cloudy_day_share_range=_range("cloudy_day_share_range", raw["cloudy_day_share_range"]),
+        cloudy_day_output=float(raw["cloudy_day_output"]),
+        cloudy_day_output_range=_range("cloudy_day_output_range", raw["cloudy_day_output_range"]),
+    )
+    _check_within("dispatch_horizon_hours", assumptions.dispatch_horizon_hours,
+                  "dispatch_horizon_hours_range", assumptions.dispatch_horizon_hours_range)
+    _check_within("solar_june_to_december_ratio", assumptions.solar_june_to_december_ratio,
+                  "solar_june_to_december_ratio_range",
+                  assumptions.solar_june_to_december_ratio_range)
+    _check_within("cloudy_day_share", assumptions.cloudy_day_share,
+                  "cloudy_day_share_range", assumptions.cloudy_day_share_range)
+    _check_within("cloudy_day_output", assumptions.cloudy_day_output,
+                  "cloudy_day_output_range", assumptions.cloudy_day_output_range)
+    if not abs(assumptions.solar_latitude_deg) < 66:
+        raise ValueError("solar_latitude_deg must lie outside the polar circles")
+    if not 0 < assumptions.solar_june_to_december_ratio:
+        raise ValueError("solar_june_to_december_ratio must be positive")
+    if not (0 <= assumptions.cloudy_day_share < 1 and 0 <= assumptions.cloudy_day_output <= 1):
+        raise ValueError("cloudy_day_share must lie in [0, 1) and cloudy_day_output in [0, 1]")
+    return assumptions
+
+
+def _parse_day_shape(name: str, entries: list) -> tuple[ShapeBlock, ...]:
+    where = f"day_shapes {name!r}"
+    blocks = tuple(
+        ShapeBlock(
+            hours=_hours(where, entry["hours"]),
+            share=float(entry["share"]),
+            share_range=(_range(f"{where} share_range", entry["share_range"])
+                         if "share_range" in entry else None),
+        )
+        for entry in entries
+    )
+    # Every half-hour in exactly one block, and the blocks make up the whole day.
+    for slot in range(SLOTS_PER_DAY):
+        hour = slot / 2
+        if sum(1 for block in blocks if block.hours[0] <= hour < block.hours[1]) != 1:
+            raise ValueError(f"{where}: the half-hour from {clock(hour)} must be in exactly one block")
+    if abs(sum(block.share for block in blocks) - 1) > 1e-9 or min(b.share for b in blocks) < 0:
+        raise ValueError(f"{where}: shares must be non-negative and add up to 1")
+    for block in blocks:
+        if block.share_range is not None:
+            _check_within(f"{where} share", block.share, "share_range", block.share_range)
+    return blocks
+
+
+def _hours(where: str, pair: list) -> tuple[float, float]:
+    if len(pair) != 2:
+        raise ValueError(f"{where}: hours must be a [start, end] pair, got {pair!r}")
+    start, end = float(pair[0]), float(pair[1])
+    if not (0 <= start < end <= 24 and (start * 2).is_integer() and (end * 2).is_integer()):
+        raise ValueError(f"{where}: hours {pair!r} must satisfy 0 <= start < end <= 24, "
+                         "on the half hour")
+    return (start, end)
 
 
 def _range(where: str, pair: list) -> Range:

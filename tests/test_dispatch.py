@@ -44,7 +44,7 @@ REBATE = finance.rebate(
 
 def year_of(profile, tariff=None):
     tariff = tariff or CONFIG.tariffs[profile.tariff_ref]
-    return household_year(profile, tariff, CONFIG.assumptions.solar_daylight_hours)
+    return household_year(profile, tariff, CONFIG.assumptions)
 
 
 def run(year, **battery):
@@ -138,10 +138,11 @@ def test_9_more_use_in_the_dearest_window_shifts_more_into_it(name):
     profile = FIXTURES[name]
     tariff = CONFIG.tariffs[profile.tariff_ref]
     dearest = dearest_window(tariff).name
-    more = replace(profile, annual_kwh_by_window={
-        **profile.annual_kwh_by_window,
-        dearest: profile.annual_kwh_by_window[dearest] * 1.10,
-    })
+    more = replace(profile, billing_periods=tuple(
+        replace(period, kwh_by_window={**period.kwh_by_window,
+                                       dearest: period.kwh_by_window[dearest] * 1.10})
+        for period in profile.billing_periods
+    ))
     in_dearest = np.tile([window.name == dearest for window in window_by_slot(tariff)], DAYS)
 
     before = run(year_of(profile, tariff)).discharge[in_dearest].sum()

@@ -33,6 +33,26 @@ from_bill:
     shoulder: 2200
     controlled_load: 1500
 
+  # SYNTHETIC, like the rest of this file. Built from the seasonality summary
+  # below: daily use follows a cosine with the stated highest/lowest ratio
+  # (38.0 / 16.5), peaking in mid-January -- the month of the highest peak
+  # demand below -- and scaled so the 13 periods sum to 9,200 kWh. Every
+  # period keeps the annual window split, so each window swings alike.
+  billing_periods:
+    - {start: 2025-09-01, days: 28, peak: 129.31, offpeak: 209.37, shoulder: 135.47, controlled_load: 92.37}
+    - {start: 2025-09-29, days: 28, peak: 158.44, offpeak: 256.52, shoulder: 165.99, controlled_load: 113.17}
+    - {start: 2025-10-27, days: 28, peak: 188.24, offpeak: 304.77, shoulder: 197.20, controlled_load: 134.46}
+    - {start: 2025-11-24, days: 28, peak: 211.92, offpeak: 343.11, shoulder: 222.01, controlled_load: 151.37}
+    - {start: 2025-12-22, days: 28, peak: 224.11, offpeak: 362.84, shoulder: 234.78, controlled_load: 160.08}
+    - {start: 2026-01-19, days: 28, peak: 222.02, offpeak: 359.46, shoulder: 232.59, controlled_load: 158.59}
+    - {start: 2026-02-16, days: 28, peak: 206.13, offpeak: 333.74, shoulder: 215.95, controlled_load: 147.24}
+    - {start: 2026-03-16, days: 28, peak: 180.06, offpeak: 291.53, shoulder: 188.64, controlled_load: 128.62}
+    - {start: 2026-04-13, days: 28, peak: 149.74, offpeak: 242.44, shoulder: 156.87, controlled_load: 106.96}
+    - {start: 2026-05-11, days: 28, peak: 122.07, offpeak: 197.64, shoulder: 127.89, controlled_load: 87.19}
+    - {start: 2026-06-08, days: 28, peak: 103.35, offpeak: 167.32, shoulder: 108.27, controlled_load: 73.82}
+    - {start: 2026-07-06, days: 28, peak: 97.83, offpeak: 158.38, shoulder: 102.48, controlled_load: 69.88}
+    - {start: 2026-08-03, days: 28, peak: 106.77, offpeak: 172.86, shoulder: 111.85, controlled_load: 76.26}
+
   monthly_peak_demand_kw:          # highest half-hourly demand, peak window
     jan: 7.8
     feb: 7.4

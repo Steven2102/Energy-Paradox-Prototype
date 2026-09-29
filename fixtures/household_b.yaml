@@ -35,6 +35,27 @@ from_bill:
   # much harder on the form, and the result carries more uncertainty. The
   # system should say so.
 
+  # SYNTHETIC, like the rest of this file. Built from the seasonality summary
+  # below: daily use follows a cosine peaking in mid-January with the stated
+  # highest/lowest ratio (19.5 / 9.1), scaled so the 13 periods sum to 4,800
+  # kWh. A 4,800 kWh year cannot also reach both stated extremes, so the
+  # periods run from 8.4 to 17.9 kWh/day. Totals only: a flat bill has no
+  # window split.
+  billing_periods:
+    - {start: 2025-09-01, days: 28, all_day: 301.33}
+    - {start: 2025-09-29, days: 28, all_day: 362.70}
+    - {start: 2025-10-27, days: 28, all_day: 425.49}
+    - {start: 2025-11-24, days: 28, all_day: 475.40}
+    - {start: 2025-12-22, days: 28, all_day: 501.07}
+    - {start: 2026-01-19, days: 28, all_day: 496.67}
+    - {start: 2026-02-16, days: 28, all_day: 463.20}
+    - {start: 2026-03-16, days: 28, all_day: 408.27}
+    - {start: 2026-04-13, days: 28, all_day: 344.38}
+    - {start: 2026-05-11, days: 28, all_day: 286.07}
+    - {start: 2026-06-08, days: 28, all_day: 246.61}
+    - {start: 2026-07-06, days: 28, all_day: 234.98}
+    - {start: 2026-08-03, days: 28, all_day: 253.83}
+
   annual_solar_export_kwh: 6900
   annual_cost_aud_at_2026_rates: 1264.00
 
@@ -67,11 +88,14 @@ notes:
     installed and the household is out during generation hours, so most output
     is exported at a low feed-in tariff while evening consumption is bought
     back at the full rate: the strongest case for a battery of the three. Yet
-    at $8,806 net (sourced prices, 2026-09-26) the payback is 12.5 years at the
-    placeholder dispatch value and roughly 14-16 at realistic ones, against a
-    10-year warranty and a 12-year expected stay. Only the ceiling gets inside
-    the warranty, at 9.2 years, and it means displacing the entire 3,903 kWh
-    annual import implied by the bill, which is physically impossible.
+    at $8,806 net (sourced prices, 2026-09-26) the half-hourly dispatch gives
+    a payback of 12.5 years, against a 10-year warranty and a 12-year expected
+    stay. Two things hold it there: the battery is too small for summer
+    evenings with air conditioning, and cloudy days leave it unfilled.
+    Removing either constraint alone gives 11.9 years. Only the ceiling gets
+    inside the warranty, at 9.2 years, and it means displacing the entire
+    3,903 kWh annual import implied by the bill, which is physically
+    impossible.
   - >
     This is the fixture expected to reach battery_now first under a cost or
     tariff change. Until then it shares battery_not_yet with

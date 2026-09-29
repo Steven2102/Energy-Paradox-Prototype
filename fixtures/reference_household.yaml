@@ -25,6 +25,24 @@ from_bill:
     shoulder: 2087      # 28.4%   5.73 kWh/day   21:00-09:00
     controlled_load: 1958   # 26.6%   5.38 kWh/day  separate circuit
 
+  # Every billing period of the trailing 12 months, kWh by window, as read from
+  # the bills (data/bills_extracted.csv). The annual figures above are their
+  # sums. The generator takes this household's seasonality from these.
+  billing_periods:
+    - {start: 2025-09-01, days: 28, peak: 97.73, offpeak: 77.84, shoulder: 118.71, controlled_load: 174.92}
+    - {start: 2025-09-29, days: 28, peak: 99.55, offpeak: 99.50, shoulder: 97.52, controlled_load: 137.25}
+    - {start: 2025-10-27, days: 28, peak: 99.30, offpeak: 110.19, shoulder: 82.87, controlled_load: 124.02}
+    - {start: 2025-11-24, days: 28, peak: 160.27, offpeak: 146.53, shoulder: 78.97, controlled_load: 82.56}
+    - {start: 2025-12-22, days: 28, peak: 130.07, offpeak: 177.74, shoulder: 74.25, controlled_load: 75.28}
+    - {start: 2026-01-19, days: 28, peak: 159.73, offpeak: 184.92, shoulder: 77.91, controlled_load: 102.94}
+    - {start: 2026-02-16, days: 28, peak: 136.92, offpeak: 128.77, shoulder: 89.72, controlled_load: 113.99}
+    - {start: 2026-03-16, days: 28, peak: 88.32, offpeak: 117.20, shoulder: 79.13, controlled_load: 130.34}
+    - {start: 2026-04-13, days: 28, peak: 85.46, offpeak: 95.78, shoulder: 101.85, controlled_load: 160.69}
+    - {start: 2026-05-11, days: 28, peak: 97.79, offpeak: 128.51, shoulder: 194.76, controlled_load: 188.15}
+    - {start: 2026-06-08, days: 28, peak: 120.93, offpeak: 143.05, shoulder: 317.88, controlled_load: 223.46}
+    - {start: 2026-07-06, days: 28, peak: 141.76, offpeak: 160.45, shoulder: 371.81, controlled_load: 213.06}
+    - {start: 2026-08-03, days: 28, peak: 150.90, offpeak: 174.95, shoulder: 401.69, controlled_load: 231.56}
+
   annual_cost_aud_as_billed: 2509.59
   annual_cost_aud_at_2026_rates: 2624.54   # use this as the no-change baseline
 

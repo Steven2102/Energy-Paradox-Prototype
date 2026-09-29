@@ -6,9 +6,9 @@ For each household in fixtures/, prints the tariff it is on, its annual
 consumption by window, and the payback calculation with every term shown
 separately, then a one-line-per-household summary.
 
-kwh_shifted, r_out and r_in come from the half-hourly dispatch simulation.
-Until the stage 3 generator exists it runs on a provisional load shape (see
-src/generator.py), so every payback printed here is provisional too.
+kwh_shifted, r_out and r_in come from the half-hourly dispatch simulation,
+run on the year src/generator.py builds from each household's billing
+periods, tariff windows and form answers.
 
 The rebate depends on the install date, which defaults to today. Pass
 --install-date to reproduce a run exactly.
@@ -16,13 +16,15 @@ The rebate depends on the install date, which defaults to today. Pass
 
 import argparse
 import math
-from datetime import date
+from datetime import date, timedelta
+
+import numpy as np
 
 from src import finance
 from src.config import Config, load_config
 from src.dispatch import simulate
 from src.finance import Payback
-from src.generator import household_year
+from src.generator import Year, household_year
 from src.profile import HouseholdProfile, check_matches_tariff, load_fixtures
 from src.tariff import UNMODELLED, Tariff, describe_hours, unmodelled_components
 
@@ -38,10 +40,11 @@ def main(argv: list[str] | None = None) -> None:
     for profile in load_fixtures():
         tariff = config.tariffs[profile.tariff_ref]
         check_matches_tariff(profile, tariff)
+        year = household_year(profile, tariff, config.assumptions)
         print_household(profile)
         print_tariff(tariff)
-        print_consumption(profile, tariff)
-        result = print_payback(profile, tariff, config, args.install_date)
+        print_consumption(profile, tariff, year)
+        result = print_payback(profile, tariff, config, args.install_date, year)
         results.append((profile, tariff, result))
 
     print_summary(results)
@@ -60,10 +63,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def print_banner(config: Config, install_date: date) -> None:
-    print("Stage 2: dispatch simulation")
-    print("  kwh_shifted, r_out and r_in come from a half-hourly dispatch of one year, run on")
-    print("  a provisional load shape until stage 3: each window's annual kWh spread evenly")
-    print("  over the year, and solar as the same daily curve every day.")
+    print("Stage 3: generator")
+    print("  kwh_shifted, r_out and r_in come from a half-hourly dispatch of one year, shaped")
+    print("  across the year by the billing periods and within the day by the tariff windows")
+    print("  and the form (see each household).")
     print(f"  Install date {install_date}, which sets the rebate (change with --install-date).")
     unverified = []
     if not config.batteries.verified:
@@ -117,9 +120,11 @@ def print_tariff(tariff: Tariff) -> None:
         print(f"  {component:<17}{status}")
 
 
-def print_consumption(profile: HouseholdProfile, tariff: Tariff) -> None:
+def print_consumption(profile: HouseholdProfile, tariff: Tariff, year: Year) -> None:
+    periods = profile.billing_periods
     total = profile.annual_kwh_total
-    print("\nAnnual consumption by window")
+    print(f"\nAnnual consumption by window  ({len(periods)} billing periods, "
+          f"{periods[0].start} to {periods[-1].end - timedelta(days=1)})")
     for window in tariff.energy_windows:
         kwh = profile.annual_kwh_by_window[window.name]
         print(f"  {window.name:<17}{kwh:>7,.0f} kWh {kwh / total:>7.1%}")
@@ -128,21 +133,43 @@ def print_consumption(profile: HouseholdProfile, tariff: Tariff) -> None:
         print(f"  {'controlled_load':<17}{kwh:>7,.0f} kWh {kwh / total:>7.1%}"
               "   separate circuit: a battery cannot serve it")
     print(f"  {'total':<17}{total:>7,.0f} kWh")
-    if len(tariff.energy_windows) == 1:
-        print("  One window: a flat-tariff bill gives magnitude only, with no time-of-day")
-        print("  shape, so results here carry more uncertainty than for a time-of-use bill.")
+
+    busiest = max(periods, key=lambda period: period.daily_kwh)
+    quietest = min(periods, key=lambda period: period.daily_kwh)
+    print(f"  Across the year: the billing periods. Busiest {busiest.daily_kwh:.1f} kWh/day "
+          f"from {busiest.start},")
+    print(f"  quietest {quietest.daily_kwh:.1f} from {quietest.start}, a ratio of "
+          f"{busiest.daily_kwh / quietest.daily_kwh:.1f} (controlled load excluded).")
+    if year.time_of_day_source == "form":
+        print("  Within the day: a flat bill has no window split, so the whole daily shape comes")
+        print("  from the form, and this result is materially less certain than a time-of-use one.")
+    else:
+        print("  Within the day: the bill splits use by window; only the shape inside each window")
+        print("  is generated.")
+    print(f"  Form answers used: {describe_form(profile)}")
+    if profile.has_solar:
+        imported = np.maximum(year.load - year.solar, 0.0).sum()
+        exported = np.maximum(year.solar - year.load, 0.0).sum()
+        print(f"  Solar: {year.solar.sum():,.0f} kWh generated. Without a battery the year exports "
+              f"{exported:,.0f}")
+        print(f"  (scaled to the bill) and imports {imported:,.0f}.")
 
 
-def print_payback(
-    profile: HouseholdProfile, tariff: Tariff, config: Config, install_date: date
-) -> Payback:
+def describe_form(profile: HouseholdProfile) -> str:
+    occupancy = profile.form.get("occupancy_pattern") or "not stated"
+    aircon = profile.form.get("aircon_use") if profile.form.get("has_aircon") else None
+    return f"occupancy {occupancy}" + (f", air conditioning {aircon}" if aircon else "")
+
+
+def print_payback(profile: HouseholdProfile, tariff: Tariff, config: Config,
+                  install_date: date, year: Year) -> Payback:
     batteries = config.batteries
     size_kwh = batteries.default_size_kwh
     print(f"\nPayback  {size_kwh:g} kWh battery (default_size_kwh), {batteries.power_kw:g} kW, "
           f"{batteries.round_trip_efficiency:.0%} round trip, installed {install_date}")
 
     dispatched = simulate(
-        household_year(profile, tariff, config.assumptions.solar_daylight_hours),
+        year,
         capacity_kwh=size_kwh,
         power_kw=batteries.power_kw,
         efficiency=batteries.round_trip_efficiency,
@@ -248,7 +275,7 @@ def print_term(name: str, value: str, unit: str, source: str) -> None:
 def print_summary(results: list[tuple[HouseholdProfile, Tariff, Payback]]) -> None:
     print()
     print(RULE)
-    print("Summary (dispatch on the provisional load shape)")
+    print("Summary")
     print(f"  {'household':<21}{'tariff':<20}{'windows':>7}  {'solar':<8}"
           f"{'saving/yr':>11}{'payback':>10}")
     for profile, tariff, r in results:
