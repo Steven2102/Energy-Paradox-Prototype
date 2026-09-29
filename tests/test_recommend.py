@@ -3,32 +3,15 @@ fixtures, plus the decision rule, missing form answers, solar_first and the
 running position."""
 
 from dataclasses import replace
-from datetime import date
-from functools import cache
 from types import SimpleNamespace
 
 import pytest
 
-from src.config import load_config
 from src.engine import (BATTERY_NOT_YET, BATTERY_NOW, CANNOT_ASSESS, NO_ACTION, SOLAR_FIRST,
-                        decide, evaluate, rule_test)
-from src.profile import load_fixtures
+                        decide, rule_test)
 from src.recommend import IncompleteRecommendation, check_complete, recommend
 from src.revisit import TOLERANCE, sweep
-
-CONFIG = load_config()
-FIXTURES = {profile.name: profile for profile in load_fixtures()}
-NAMES = ["reference_household", "household_b", "household_c"]
-INSTALLED = date(2026, 9, 29)
-
-
-def run(profile, tariff=None, config=CONFIG):
-    return evaluate(profile, tariff or CONFIG.tariffs[profile.tariff_ref], config, INSTALLED)
-
-
-@cache
-def recommendation(name):
-    return recommend(run(FIXTURES[name]))
+from tests.shared import CONFIG, FIXTURES, NAMES, recommendation, run
 
 
 # ----------------------------------------------------------- required test 5
@@ -98,7 +81,8 @@ def test_7_a_recommendation_missing_a_basis_figure_is_refused():
 
 def rerun(name, revisit, value):
     """Re-run the engine with one parameter moved -- applied here, independently of
-    src/revisit.py, so a sweep that moves the wrong input fails too."""
+    src/revisit.py, so a sweep that moves the wrong input fails too. Returns the
+    evaluation."""
     profile, config = FIXTURES[name], CONFIG
     tariff = CONFIG.tariffs[profile.tariff_ref]
     if revisit.parameter == "battery cost":
@@ -121,7 +105,7 @@ def rerun(name, revisit, value):
                 CONFIG.assumptions.new_solar_feed_in_aud_per_kwh))
     else:
         raise AssertionError(f"no independent re-run for {revisit.parameter!r}")
-    return getattr(run(profile, tariff, config), revisit.tracks)
+    return run(profile, tariff, config)
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -131,10 +115,35 @@ def test_8_every_reported_threshold_and_every_no_change_is_real(name):
             continue
         if revisit.to_action is None:
             for end in revisit.searched:
-                assert rerun(name, revisit, end) == revisit.from_action, revisit
-        else:
-            assert rerun(name, revisit, revisit.threshold) == revisit.to_action, revisit
-            assert rerun(name, revisit, revisit.before) == revisit.from_action, revisit
+                assert getattr(rerun(name, revisit, end), revisit.tracks) == revisit.from_action
+            continue
+        before = rerun(name, revisit, revisit.before)
+        after = rerun(name, revisit, revisit.threshold)
+        assert getattr(after, revisit.tracks) == revisit.to_action, revisit
+        assert getattr(before, revisit.tracks) == revisit.from_action, revisit
+        # And what the justification reads off either side of it.
+        for side, evaluation in zip(revisit.either_side, (before, after)):
+            assert side.battery_action == evaluation.battery_action
+            assert side.payback_years == pytest.approx(evaluation.payback.payback_years)
+        assert revisit.advice_changes == (before.battery_action != after.battery_action)
+
+
+def test_8_a_threshold_that_moves_only_the_solar_first_label_leaves_the_advice_alone():
+    # The reference household's battery price: at the threshold solar_first gives
+    # way to battery_not_yet, but the battery is not yet on both sides, and solar
+    # still pays back in about payback_ratio of the battery's time either side.
+    cost = next(revisit for revisit in recommendation("reference_household").revisit_if
+                if revisit.parameter == "battery cost")
+    before, after = cost.either_side
+    ratio = CONFIG.assumptions.indicative_solar.payback_ratio
+    assert (cost.from_action, cost.to_action, cost.advice_changes) == (
+        SOLAR_FIRST, BATTERY_NOT_YET, False)
+    assert before.battery_action == after.battery_action == BATTERY_NOT_YET
+    assert before.solar_payback_years <= ratio * before.payback_years
+    assert after.solar_payback_years > ratio * after.payback_years
+    assert after.solar_payback_years / after.payback_years == pytest.approx(ratio, abs=0.01)
+    assert all(revisit.advice_changes for revisit in recommendation("household_b").revisit_if
+               if revisit.to_action is not None)
 
 
 STEP = TOLERANCE["rate spread"]
@@ -145,7 +154,9 @@ def sweep_rate_spread(changed):
     """The rate-spread sweep over its configured range, against a stand-in engine
     whose action changes wherever changed(value) is true."""
     def at(value):
-        return SimpleNamespace(action="changed" if changed(value) else "unchanged")
+        action = "changed" if changed(value) else "unchanged"
+        return SimpleNamespace(action=action, battery_action=action, solar=None,
+                               payback=SimpleNamespace(payback_years=10.0))
     return sweep(SimpleNamespace(action="unchanged"), "rate spread", "$/kWh", "action",
                  0.0, (LOW, HIGH), at), at
 

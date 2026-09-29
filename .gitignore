@@ -27,3 +27,8 @@ venv/
 # --- Build output ------------------------------------------------------------
 output/
 *.log
+
+# --- Language-model replies --------------------------------------------------
+# The runtime cache (src/llm.py). The replies the tests replay are in
+# tests/recordings/ and are committed.
+.llm_cache/

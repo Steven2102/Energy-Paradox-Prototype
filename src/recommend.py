@@ -31,6 +31,7 @@ from datetime import date
 
 import numpy as np
 
+from src import finance
 from src.dispatch import worth_serving
 from src.engine import (BATTERY_NOW, CANNOT_ASSESS, NO_ACTION, Evaluation, RuleTest,
                         SolarComparison, evaluate)
@@ -71,8 +72,27 @@ class Assumption:
     value: object               # None where the form gave nothing
     source: str
     date: date | None           # when the figure was sourced; None for an undated estimate
-    range: tuple | None = None
+    range: tuple | None = None  # in the value's own unit
     effect: str | None = None   # for a missing answer: whether it would change the answer
+    unit: str | None = None     # "$", "%", "c/kWh" (value in $/kWh), "years", "hours";
+                                # None for a plain number or a description
+
+
+def quantity(value: object, unit: str | None) -> str:
+    """An assumption's value, or one end of its range, as it reads in its unit."""
+    if value is None:
+        return "not given"
+    if isinstance(value, str):
+        return value
+    if unit == "$":
+        return f"${value:,.0f}"
+    if unit == "%":
+        return f"{value:.0%}"
+    if unit == "c/kWh":
+        return f"{value * 100:.1f} c/kWh"
+    if unit in ("years", "hours"):
+        return f"{value:g} {unit}"
+    return f"{value:,g}"
 
 
 @dataclass(frozen=True)
@@ -281,28 +301,35 @@ def _assumptions(evaluation: Evaluation) -> tuple[Assumption, ...]:
     batteries, incentives, assumptions = config.batteries, config.incentives, config.assumptions
     cost = batteries.cost_model
     period = incentives.deeming_period_on(evaluation.install_date)
+
+    def rebate_at(stc_price: float) -> float:
+        return finance.rebate(evaluation.battery_kwh, deeming_factor=period.factor,
+                              stc_price_aud=stc_price, taper=incentives.capacity_taper).rebate_aud
+
+    stc_low, stc_high = incentives.stc_price_range_aud
     items = [
         Assumption("battery installed price", round(payback.battery_cost, 2),
                    f"config/batteries.yaml: ${cost.fixed_aud:,.0f} + ${cost.variable_aud_per_kwh:,.0f}"
-                   f" × {evaluation.battery_kwh:g} kWh", batteries.sourced),
+                   f" × {evaluation.battery_kwh:g} kWh", batteries.sourced, unit="$"),
         Assumption("rebate", round(payback.rebate, 2),
                    f"config/incentives.yaml: deeming factor {period.factor:g} for installs from "
-                   f"{period.start} to {period.until}, at ${incentives.stc_price_aud:.2f} per STC",
-                   incentives.sourced, range=incentives.stc_price_range_aud),
+                   f"{period.start} to {period.until}, at ${incentives.stc_price_aud:.2f} per STC; "
+                   f"the range is the rebate at ${stc_low:.2f} to ${stc_high:.2f} per STC",
+                   incentives.sourced, range=(rebate_at(stc_low), rebate_at(stc_high)), unit="$"),
         Assumption("round-trip efficiency", batteries.round_trip_efficiency,
                    "config/batteries.yaml", batteries.sourced,
-                   range=batteries.round_trip_efficiency_range),
-        Assumption("marginal wear cost ($/kWh)", batteries.marginal_throughput_cost_aud_per_kwh,
+                   range=batteries.round_trip_efficiency_range, unit="%"),
+        Assumption("marginal wear cost", batteries.marginal_throughput_cost_aud_per_kwh,
                    "config/batteries.yaml", batteries.sourced,
-                   range=batteries.marginal_throughput_cost_range),
-        Assumption("warranty (years)", batteries.warranty_years, "config/batteries.yaml",
-                   batteries.sourced),
+                   range=batteries.marginal_throughput_cost_range, unit="c/kWh"),
+        Assumption("warranty", batteries.warranty_years, "config/batteries.yaml",
+                   batteries.sourced, unit="years"),
         Assumption("electricity prices", "held at today's rates: no growth",
                    f"tariff {evaluation.tariff.id} (config/tariffs.yaml)",
                    evaluation.tariff.effective_from),
-        Assumption("planning horizon (hours)", assumptions.dispatch_horizon_hours,
+        Assumption("planning horizon", assumptions.dispatch_horizon_hours,
                    "config/assumptions.yaml", None,
-                   range=assumptions.dispatch_horizon_hours_range),
+                   range=assumptions.dispatch_horizon_hours_range, unit="hours"),
     ]
     if profile.has_solar:
         items += [
@@ -322,7 +349,7 @@ def _assumptions(evaluation: Evaluation) -> tuple[Assumption, ...]:
             f"{occupancy}: weekdays use the {weekday} shape, "
             f"{daytime.share:.0%} of the day between {daytime.hours[0]:g}:00 and "
             f"{daytime.hours[1]:g}:00",
-            "config/assumptions.yaml", None, range=daytime.share_range))
+            "config/assumptions.yaml", None, range=daytime.share_range, unit="%"))
     if evaluation.solar is not None:
         indicative = assumptions.indicative_solar
         items.append(Assumption(

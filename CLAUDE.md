@@ -238,8 +238,12 @@ src/
   recommend.py        # the structured recommendation object
   revisit.py          # parameter sweeps -> computed revisit_if thresholds
   explain.py          # LLM justification, from computed values only
+  llm.py              # the only module that calls a model provider; provider and key from .env
   followup.py         # intent classification -> explain or re-run
 tests/
+  conftest.py         # no test calls a model: replies replay from recordings/
+  shared.py           # each fixture's recommendation, computed once per test session
+  recordings/         # recorded model replies, keyed on their exact input
   test_dispatch.py
   test_bill.py
   test_loaders.py
@@ -248,6 +252,8 @@ tests/
   test_run_fixtures.py
   test_generator.py
   test_recommend.py
+  test_explain.py
+  test_llm.py
 app.py
 run_fixtures.py       # console runner: every fixture through the engine
 pytest.ini            # puts the repo root on the test import path

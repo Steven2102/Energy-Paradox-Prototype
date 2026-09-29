@@ -7,8 +7,9 @@ pyyaml
 python-dotenv
 pytest
 
-# Stage 6 onwards — install only the provider you chose.
-# anthropic
+# Stage 5 onwards — install only the provider LLM_PROVIDER in .env chooses.
+# src/llm.py implements anthropic; any other needs a function there first.
+anthropic
 # openai
 # google-genai
 

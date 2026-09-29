@@ -62,6 +62,7 @@ class SolarComparison:
     annual_saving: float      # $/yr
     installed_cost: float     # $
     payback_years: float      # indicative
+    payback_ratio: float      # solar_first at most this share of the battery's payback
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,7 @@ def assess(profile: HouseholdProfile, tariff: Tariff, config: Config, install_da
     solar = compare_solar(profile, tariff, config)
     outranked = (solar is not None
                  and battery_action in (BATTERY_NOW, BATTERY_NOT_YET, NO_ACTION)
-                 and _solar_outranks(solar, payback, config))
+                 and _solar_outranks(solar, payback))
     return Evaluation(
         profile=profile,
         tariff=tariff,
@@ -197,14 +198,15 @@ def compare_solar(profile: HouseholdProfile, tariff: Tariff, config: Config) -> 
         annual_saving=saving,
         installed_cost=installed,
         payback_years=installed / saving if saving > 0 else math.inf,
+        payback_ratio=indicative.payback_ratio,
     )
 
 
-def _solar_outranks(solar: SolarComparison, payback: Payback, config: Config) -> bool:
+def _solar_outranks(solar: SolarComparison, payback: Payback) -> bool:
     """Materially better, not merely better: solar's indicative payback is at most
     payback_ratio of the battery's."""
-    ratio = config.assumptions.indicative_solar.payback_ratio
-    return math.isfinite(solar.payback_years) and solar.payback_years <= ratio * payback.payback_years
+    return (math.isfinite(solar.payback_years)
+            and solar.payback_years <= solar.payback_ratio * payback.payback_years)
 
 
 def rule_test(limit: str, payback_years: float, limit_years) -> RuleTest:

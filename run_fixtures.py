@@ -1,6 +1,6 @@
 """Console runner: every fixture through the engine.
 
-    python run_fixtures.py [--install-date YYYY-MM-DD]
+    python run_fixtures.py [--install-date YYYY-MM-DD] [--explain]
 
 For each household in fixtures/, prints the tariff it is on, its annual
 consumption by window, the payback calculation with every term shown
@@ -15,10 +15,15 @@ the revisit_if sweeps, which re-run the engine.
 
 The rebate depends on the install date, which defaults to today. Pass
 --install-date to reproduce a run exactly.
+
+--explain adds each household's justification, written by the language model
+from the recommendation (src/explain.py). It calls the provider set in .env
+unless the reply is already cached; without it, nothing calls a model.
 """
 
 import argparse
 import math
+import textwrap
 from datetime import date, timedelta
 
 import numpy as np
@@ -27,8 +32,9 @@ from src.config import Config, load_config
 from src.engine import SOLAR_FIRST, Evaluation, evaluate
 from src.generator import Year
 from src.profile import HouseholdProfile, load_fixtures
-from src.recommend import Recommendation, recommend
-from src.revisit import Revisit
+from src.explain import explain
+from src.recommend import Recommendation, quantity, recommend
+from src.revisit import Revisit, describe_value
 from src.tariff import UNMODELLED, Tariff, describe_hours, unmodelled_components
 
 RULE = "=" * 88
@@ -49,6 +55,8 @@ def main(argv: list[str] | None = None) -> None:
         print_consumption(profile, tariff, evaluation.year)
         print_payback(evaluation)
         print_recommendation(recommendation)
+        if args.explain:
+            print_justification(recommendation)
         results.append((evaluation, recommendation))
 
     print_summary(results)
@@ -63,15 +71,21 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="YYYY-MM-DD",
         help="when the battery is installed; sets the rebate's deeming factor (default: today)",
     )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="add each household's justification, written by the language model",
+    )
     return parser.parse_args(argv)
 
 
 def print_banner(config: Config, install_date: date) -> None:
-    print("Stage 4: recommendation")
+    print("Stage 5: recommendation and justification")
     print("  Each household: a half-hourly dispatch of one year, shaped by its billing periods,")
     print("  tariff windows and form answers; the headline equation; and the recommendation")
     print("  built from them, with thresholds found by re-running the engine.")
     print(f"  Install date {install_date}, which sets the rebate (change with --install-date).")
+    print("  Add --explain for each household's justification, written from its recommendation.")
     unverified = []
     if not config.batteries.verified:
         unverified.append("config/batteries.yaml")
@@ -288,10 +302,10 @@ def print_recommendation(rec: Recommendation) -> None:
         print(f"    {revisit.parameter:<15}{describe_revisit(revisit)}")
     print("  Assumptions:")
     for item in rec.assumptions:
-        value = ("not given" if item.value is None
-                 else f"{item.value:,g}" if isinstance(item.value, float) else item.value)
+        value = quantity(item.value, item.unit)
         dated = f", {item.date}" if item.date else ""
-        ranged = f"  range {list(item.range)}" if item.range else ""
+        ranged = (f"  range {quantity(item.range[0], item.unit)} to "
+                  f"{quantity(item.range[1], item.unit)}" if item.range else "")
         print(f"    {item.name}: {value}  ({item.source}{dated}){ranged}")
         if item.effect:
             print(f"      -> {item.effect}")
@@ -304,19 +318,20 @@ def describe_revisit(revisit: Revisit) -> str:
     tracked = "the battery answer" if revisit.tracks == "battery_action" else "the answer"
     if revisit.to_action is None:
         return f"no change in {tracked} within the range searched, {low} to {high}"
+    label_only = ("; the label only: the battery answer is "
+                  f"{revisit.either_side[1].battery_action} either side"
+                  if not revisit.advice_changes else "")
     return (f"{revisit.from_action} -> {revisit.to_action} at "
             f"{describe_value(revisit, revisit.threshold)} "
-            f"(now {describe_value(revisit, revisit.current)})")
+            f"(now {describe_value(revisit, revisit.current)}){label_only}")
 
 
-def describe_value(revisit: Revisit, value: float) -> str:
-    if revisit.parameter == "battery cost":
-        return f"${value:,.0f}"
-    if revisit.parameter == "adding solar":
-        return f"{value:.1f} kW"
-    if revisit.parameter == "rate spread":
-        return f"{value * 100:+.1f} c/kWh"
-    return f"{value * 100:.1f} c/kWh"
+def print_justification(rec: Recommendation) -> None:
+    print("\nJustification  (written by the language model from the recommendation above; "
+          "every figure checked against it)")
+    for paragraph in explain(rec).split("\n\n"):
+        print(textwrap.fill(paragraph, width=88, initial_indent="  ", subsequent_indent="  "))
+        print()
 
 
 def years(value: float) -> str:

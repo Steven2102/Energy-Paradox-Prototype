@@ -12,9 +12,18 @@ The sweep set is four parameters: battery cost, feed-in tariff, rate spread and
 adding solar. Adding solar tracks the battery answer rather than the final
 action: any solar at all makes solar_first inapplicable, so the question it
 answers is whether solar would make a battery worthwhile.
+
+A threshold can move the label without moving the advice. Where the action flips
+between solar_first and a battery answer that is the same on both sides, what
+crossed was solar's indicative payback against payback_ratio of the battery's:
+solar pays back in about that share of the time either side, and the battery
+answer has not moved. Each threshold records the answer on both sides, and
+advice_changes says whether the battery answer differs -- so a justification
+never tells a household its answer changes where only the label does.
 """
 
 from dataclasses import dataclass, replace
+from functools import cache
 from typing import Callable
 
 from src.engine import Evaluation, assess, evaluate
@@ -26,6 +35,16 @@ TOLERANCE = {
     "rate spread": 0.001,       # $/kWh
     "adding solar": 0.1,        # kW
 }
+
+
+@dataclass(frozen=True)
+class Side:
+    """The engine's answer at one value beside a threshold."""
+
+    action: str
+    battery_action: str
+    payback_years: float                # the battery's
+    solar_payback_years: float | None   # indicative; None where the household has solar
 
 
 @dataclass(frozen=True)
@@ -41,6 +60,8 @@ class Revisit:
     threshold: float | None                # the first value that gives to_action
     before: float | None                   # the last value beside it that still gives from_action
     not_applicable: str | None             # why the sweep does not apply, where it does not
+    either_side: tuple[Side, Side] | None = None  # at before and at threshold, where there is one
+    advice_changes: bool | None = None     # the battery answer differs either side (see above)
 
 
 def revisit_if(evaluation: Evaluation) -> tuple[Revisit, ...]:
@@ -96,7 +117,8 @@ def _rate_spread(evaluation: Evaluation) -> Revisit:
         return evaluate(evaluation.profile, replace(tariff, energy_windows=windows),
                         evaluation.config, evaluation.install_date)
 
-    return sweep(evaluation, "rate spread", f"$/kWh added to the {dearest.name} rate", "action",
+    rate = "flat" if len(tariff.energy_windows) == 1 else dearest.name
+    return sweep(evaluation, "rate spread", f"$/kWh added to the {rate} rate", "action",
                  0.0, evaluation.config.assumptions.revisit_ranges.rate_spread_change_aud_per_kwh,
                  at)
 
@@ -132,26 +154,36 @@ def sweep(evaluation: Evaluation, parameter: str, unit: str, tracks: str, curren
     only where the search stopped. It is reported as no change, over the range
     pulled in to the last value verified unchanged -- the answer can already
     differ at the edge itself, and a no-change report must hold at both ends."""
+    at = cache(at)  # the sides of a threshold are read back, not re-run
     now = getattr(evaluation, tracks)
     tolerance = TOLERANCE[parameter]
     unchanged_over = list(searched)
     nearest = None
-    for side, end in enumerate(searched):
+    for which, end in enumerate(searched):
         if end == current or getattr(at(end), tracks) == now:
             continue
         before, threshold = _bisect(lambda value: getattr(at(value), tracks) == now,
                                     current, end, tolerance)
         if abs(end - threshold) <= tolerance:
-            unchanged_over[side] = before
+            unchanged_over[which] = before
         elif nearest is None or abs(threshold - current) < abs(nearest[1] - current):
             nearest = (before, threshold)
     if nearest is None:
         return Revisit(parameter, unit, tracks, current, tuple(unchanged_over), now,
                        to_action=None, threshold=None, before=None, not_applicable=None)
     before, threshold = nearest
+    sides = (_side(at(before)), _side(at(threshold)))
     return Revisit(parameter, unit, tracks, current, tuple(searched), now,
                    to_action=getattr(at(threshold), tracks), threshold=threshold,
-                   before=before, not_applicable=None)
+                   before=before, not_applicable=None, either_side=sides,
+                   advice_changes=sides[0].battery_action != sides[1].battery_action)
+
+
+def _side(evaluation: Evaluation) -> Side:
+    solar = evaluation.solar
+    return Side(action=evaluation.action, battery_action=evaluation.battery_action,
+                payback_years=evaluation.payback.payback_years,
+                solar_payback_years=solar.payback_years if solar is not None else None)
 
 
 def _bisect(unchanged: Callable[[float], bool], inside: float, outside: float,
@@ -172,3 +204,14 @@ def _not_applicable(evaluation: Evaluation, parameter: str, unit: str, tracks: s
     return Revisit(parameter, unit, tracks, current=None, searched=None,
                    from_action=getattr(evaluation, tracks), to_action=None, threshold=None,
                    before=None, not_applicable=why)
+
+
+def describe_value(revisit: Revisit, value: float) -> str:
+    """A value of the swept parameter as the household reads it."""
+    if revisit.parameter == "battery cost":
+        return f"${value:,.0f}"
+    if revisit.parameter == "adding solar":
+        return f"{value:.1f} kW"
+    if revisit.parameter == "rate spread":
+        return f"{value * 100:+.1f} c/kWh"
+    return f"{value * 100:.1f} c/kWh"
