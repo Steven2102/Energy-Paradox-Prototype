@@ -99,9 +99,12 @@ notes:
   - >
     This is the fixture expected to reach battery_now first under a cost or
     tariff change. Until then it shares battery_not_yet with
-    reference_household.yaml, but not the reason: here the binding constraint
-    is import volume, there it is evening demand. Identical labels are
-    acceptable; identical reasoning means the engine is not discriminating.
+    reference_household.yaml, but not the reason. Here the binding constraint
+    is battery capacity and available surplus: summer evenings exceed 10 kWh
+    and cloudy days leave the battery unfilled, leaving 408 kWh of imports
+    unmet. There it is evening demand: peak-window use never exceeds 5.7 kWh
+    against a 10 kWh battery. Identical labels are acceptable; identical
+    reasoning means the engine is not discriminating.
   - >
     Charge opportunity cost here is the feed-in tariff forgone, not an offpeak
     import rate. Both paths must work.

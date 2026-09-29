@@ -250,7 +250,12 @@ For bill extraction:
 
 Against overfitting — these are what stop the engine learning one household:
 
-5. **The engine discriminates.** Across the three fixtures, payback spans at least a 3× range and the binding constraint differs — evening demand for the reference household, import volume for `household_b`, an unpriced charge for `household_c`. At least one fixture must reach `battery_now` somewhere inside its `revisit_if` sweep range. Identical labels are acceptable; identical reasoning is not.
+5. **The engine discriminates.** Across the three fixtures, payback spans at least a 3× range and the binding constraint differs:
+   - reference household: evening demand — peak-window use never exceeds 5.7 kWh against a 10 kWh battery, so the battery is larger than the household can use
+   - `household_b`: battery capacity and available surplus — summer evenings exceed 10 kWh and cloudy days leave it unfilled, leaving 408 kWh of imports unmet
+   - `household_c`: an unpriced charge
+
+   At least one fixture must reach `battery_now` somewhere inside its `revisit_if` sweep range. Identical labels are acceptable; identical reasoning is not.
 6. **`household_c.yaml` triggers the unmodelled-component declaration** while demand charges are unimplemented, and stops triggering it when they are.
 7. **No recommendation ships incomplete.** Every returned object has a non-empty `revisit_if`, `assumptions` and `not_priced`, and every figure in `basis` is populated. A recommendation missing any of them fails, rather than rendering with a blank section.
 8. **`revisit_if` thresholds are real.** Re-running the engine at the reported threshold must actually produce the stated change of `action`. This catches a sweep that reports a number without verifying it.
