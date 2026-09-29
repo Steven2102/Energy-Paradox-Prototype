@@ -41,6 +41,7 @@ class Batteries:
     marginal_throughput_cost_range: Range
     warranty_years: float
     verified: bool
+    sourced: date | None
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class Incentives:
     deeming_schedule: tuple[DeemingPeriod, ...]
     capacity_taper: tuple[tuple[float, float], ...]  # (up_to_kwh, share), ascending
     verified: bool
+    sourced: date | None
 
     def deeming_period_on(self, day: date) -> DeemingPeriod:
         """The period whose factor applies to an installation on this date.
@@ -91,6 +93,30 @@ class Occupancy:
 
 
 @dataclass(frozen=True)
+class IndicativeSolar:
+    """The coarse solar comparison behind solar_first. Not a PV model."""
+
+    kw: float
+    kw_range: Range
+    self_consumption: float  # share of generation used on site
+    self_consumption_range: Range
+    installed_aud_per_kw: float
+    installed_aud_per_kw_range: Range
+    payback_ratio: float     # solar_first outranks when solar's payback is at most this share
+    payback_ratio_range: Range
+
+
+@dataclass(frozen=True)
+class RevisitRanges:
+    """The plausible range each revisit_if sweep searches."""
+
+    battery_cost_share: Range  # of today's installed price
+    feed_in_aud_per_kwh: Range
+    rate_spread_change_aud_per_kwh: Range
+    added_solar_kw: Range
+
+
+@dataclass(frozen=True)
 class Assumptions:
     """config/assumptions.yaml: modelling choices, estimated rather than measured."""
 
@@ -107,6 +133,12 @@ class Assumptions:
     cloudy_day_share_range: Range
     cloudy_day_output: float
     cloudy_day_output_range: Range
+    solar_yield_kwh_per_kw: float
+    solar_yield_kwh_per_kw_range: Range
+    new_solar_feed_in_aud_per_kwh: float
+    new_solar_feed_in_aud_per_kwh_range: Range
+    indicative_solar: IndicativeSolar
+    revisit_ranges: RevisitRanges
 
     @property
     def dispatch_horizon_intervals(self) -> int:
@@ -152,6 +184,7 @@ def parse_batteries(raw: dict) -> Batteries:
         ),
         warranty_years=float(raw["warranty_years"]),
         verified=raw.get("verified") is True,
+        sourced=raw.get("sourced"),
     )
     _check_within("round_trip_efficiency", batteries.round_trip_efficiency,
                   "round_trip_efficiency_range", batteries.round_trip_efficiency_range)
@@ -198,6 +231,7 @@ def parse_incentives(raw: dict) -> Incentives:
         deeming_schedule=schedule,
         capacity_taper=taper,
         verified=raw.get("verified") is True,
+        sourced=raw.get("sourced"),
     )
     _check_within("stc_price_aud", incentives.stc_price_aud,
                   "stc_price_range_aud", incentives.stc_price_range_aud)
@@ -236,6 +270,18 @@ def parse_assumptions(raw: dict) -> Assumptions:
         cloudy_day_share_range=_range("cloudy_day_share_range", raw["cloudy_day_share_range"]),
         cloudy_day_output=float(raw["cloudy_day_output"]),
         cloudy_day_output_range=_range("cloudy_day_output_range", raw["cloudy_day_output_range"]),
+        solar_yield_kwh_per_kw=float(raw["solar_yield_kwh_per_kw"]),
+        solar_yield_kwh_per_kw_range=_range(
+            "solar_yield_kwh_per_kw_range", raw["solar_yield_kwh_per_kw_range"]),
+        new_solar_feed_in_aud_per_kwh=float(raw["new_solar_feed_in_aud_per_kwh"]),
+        new_solar_feed_in_aud_per_kwh_range=_range(
+            "new_solar_feed_in_aud_per_kwh_range", raw["new_solar_feed_in_aud_per_kwh_range"]),
+        indicative_solar=_parse_indicative_solar(raw["indicative_solar"]),
+        revisit_ranges=RevisitRanges(**{
+            key: _range(f"revisit_ranges {key}", raw["revisit_ranges"][key])
+            for key in ("battery_cost_share", "feed_in_aud_per_kwh",
+                        "rate_spread_change_aud_per_kwh", "added_solar_kw")
+        }),
     )
     _check_within("dispatch_horizon_hours", assumptions.dispatch_horizon_hours,
                   "dispatch_horizon_hours_range", assumptions.dispatch_horizon_hours_range)
@@ -246,6 +292,11 @@ def parse_assumptions(raw: dict) -> Assumptions:
                   "cloudy_day_share_range", assumptions.cloudy_day_share_range)
     _check_within("cloudy_day_output", assumptions.cloudy_day_output,
                   "cloudy_day_output_range", assumptions.cloudy_day_output_range)
+    _check_within("solar_yield_kwh_per_kw", assumptions.solar_yield_kwh_per_kw,
+                  "solar_yield_kwh_per_kw_range", assumptions.solar_yield_kwh_per_kw_range)
+    _check_within("new_solar_feed_in_aud_per_kwh", assumptions.new_solar_feed_in_aud_per_kwh,
+                  "new_solar_feed_in_aud_per_kwh_range",
+                  assumptions.new_solar_feed_in_aud_per_kwh_range)
     if not abs(assumptions.solar_latitude_deg) < 66:
         raise ValueError("solar_latitude_deg must lie outside the polar circles")
     if not 0 < assumptions.solar_june_to_december_ratio:
@@ -253,6 +304,30 @@ def parse_assumptions(raw: dict) -> Assumptions:
     if not (0 <= assumptions.cloudy_day_share < 1 and 0 <= assumptions.cloudy_day_output <= 1):
         raise ValueError("cloudy_day_share must lie in [0, 1) and cloudy_day_output in [0, 1]")
     return assumptions
+
+
+def _parse_indicative_solar(raw: dict) -> IndicativeSolar:
+    where = "indicative_solar"
+    solar = IndicativeSolar(
+        kw=float(raw["kw"]),
+        kw_range=_range(f"{where} kw_range", raw["kw_range"]),
+        self_consumption=float(raw["self_consumption"]),
+        self_consumption_range=_range(f"{where} self_consumption_range",
+                                      raw["self_consumption_range"]),
+        installed_aud_per_kw=float(raw["installed_aud_per_kw"]),
+        installed_aud_per_kw_range=_range(f"{where} installed_aud_per_kw_range",
+                                          raw["installed_aud_per_kw_range"]),
+        payback_ratio=float(raw["payback_ratio"]),
+        payback_ratio_range=_range(f"{where} payback_ratio_range", raw["payback_ratio_range"]),
+    )
+    _check_within(f"{where} kw", solar.kw, "kw_range", solar.kw_range)
+    _check_within(f"{where} self_consumption", solar.self_consumption,
+                  "self_consumption_range", solar.self_consumption_range)
+    _check_within(f"{where} installed_aud_per_kw", solar.installed_aud_per_kw,
+                  "installed_aud_per_kw_range", solar.installed_aud_per_kw_range)
+    _check_within(f"{where} payback_ratio", solar.payback_ratio,
+                  "payback_ratio_range", solar.payback_ratio_range)
+    return solar
 
 
 def _parse_day_shape(name: str, entries: list) -> tuple[ShapeBlock, ...]:

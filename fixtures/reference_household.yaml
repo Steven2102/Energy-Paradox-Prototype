@@ -85,3 +85,14 @@ notes:
     Controlled load (1958 kWh/yr, 27% of consumption) sits on a separate circuit
     at the cheapest rate. A household battery cannot serve it. Excluding it,
     addressable consumption is 5401 kWh/yr.
+  - >
+    Adding solar does not make this household's battery worthwhile. Solar comes
+    first for this household (solar_first), but with panels added the battery's
+    payback bottoms out at 13.5 years from about 6.6 kW upward -- outside the
+    10-year warranty (installed 2026-09-29, new solar at a 5 c/kWh feed-in).
+    The battery's output levels off near 2,100 kWh a year. In winter it is
+    already full on most days (63 of 92, June-August) and empties into the peak
+    window and then the overnight shoulder load, so more panels add almost
+    nothing; in summer it never fills, because solar covers the early part of
+    the peak window itself and little evening load is left. The EV -> solar ->
+    battery chain in CLAUDE.md's domain facts fails at its last step here.

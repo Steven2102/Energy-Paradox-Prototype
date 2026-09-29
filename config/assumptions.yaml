@@ -3,9 +3,9 @@
 # say so. Scalars carry a range beside the point value, like the rest of
 # config/, for the sensitivity sweeps at stage 4.
 #
-# ESTIMATES, NOT SOURCED: the day shapes, air-conditioning hours and
-# cloudiness below are the modeller's judgement. Replace them with measured
-# figures if any become available.
+# ESTIMATES, NOT SOURCED: the day shapes, air-conditioning hours, cloudiness,
+# solar comparison and sweep ranges below are the modeller's judgement.
+# Replace them with measured figures if any become available.
 
 # ------------------------------------------------------------------- dispatch
 
@@ -84,3 +84,42 @@ cloudy_day_output_range: [0.20, 0.60]
 # Even spacing is optimistic. Real cloud comes in runs, and consecutive cloudy
 # days drain a battery with no chance to refill in between. Clustering is
 # deliberately not modelled; treat the result as the favourable end.
+
+solar_yield_kwh_per_kw: 1400
+solar_yield_kwh_per_kw_range: [1200, 1600]
+# A year's output per kW of panels in South East Queensland, for solar the
+# household does not have yet. Existing solar is scaled to the bill instead.
+
+new_solar_feed_in_aud_per_kwh: 0.05
+new_solar_feed_in_aud_per_kwh_range: [0.03, 0.10]
+# The export rate for newly added solar where the tariff has none. SEQ feed-in
+# tariffs run roughly 3-10 c/kWh.
+
+# --------------------------------------------------------------- solar_first
+# A coarse, indicative comparison and nothing more -- not a PV model:
+#   generation    = kw × solar_yield_kwh_per_kw
+#   self_consumed = generation × self_consumption, capped at the billed use in
+#                   the tariff window covering midday
+#   saving        = self_consumed × that window's rate + the rest × feed-in
+#   payback       = kw × installed_aud_per_kw / saving
+# It decides only whether solar_first outranks a battery answer: it does when
+# its payback is at most payback_ratio of the battery's. It is never quoted as
+# a precise payback.
+indicative_solar:
+  kw: 6.6
+  kw_range: [3.0, 10.0]
+  self_consumption: 0.30
+  self_consumption_range: [0.20, 0.50]
+  installed_aud_per_kw: 1000          # after the small-scale certificate discount
+  installed_aud_per_kw_range: [800, 1400]
+  payback_ratio: 0.5
+  payback_ratio_range: [0.33, 0.67]
+
+# ------------------------------------------------------------ revisit sweeps
+# The plausible range each revisit_if sweep searches. A threshold outside it is
+# reported as "no change within the range", not extrapolated.
+revisit_ranges:
+  battery_cost_share: [0.5, 1.5]                 # of today's installed price
+  feed_in_aud_per_kwh: [0.0, 0.15]
+  rate_spread_change_aud_per_kwh: [-0.10, 0.20]  # added to the dearest window's rate
+  added_solar_kw: [0.0, 10.0]

@@ -11,6 +11,7 @@ import pytest
 from src import finance
 from src.config import load_config
 from src.dispatch import simulate
+from src.engine import BATTERY_NOW, evaluate
 from src.generator import DAYS, household_year
 from src.profile import load_fixtures
 from src.tariff import window_by_slot
@@ -163,9 +164,23 @@ def test_9_a_wider_rate_spread_shortens_payback(name):
     assert payback_years(profile, wider) < payback_years(profile, tariff)
 
 
-@pytest.mark.skip(reason="expected stay enters through the decision rule, in recommend.py (stage 4)")
-def test_9_a_longer_expected_stay_is_more_favourable():
-    pass
+@pytest.mark.parametrize("name", NAMES)
+def test_9_a_longer_expected_stay_is_more_favourable(name):
+    # The stay enters through the decision rule: a longer one can only remove a
+    # failed limit, never add one, and never turn battery_now into anything else.
+    profile = FIXTURES[name]
+
+    def with_stay(years):
+        stayed = replace(profile, form={**profile.form, "years_expected_in_home": years})
+        return evaluate(stayed, CONFIG.tariffs[profile.tariff_ref], CONFIG, PINNED)
+
+    def failed(evaluation):
+        return {test.limit for test in evaluation.rule_tests if test.passed is False}
+
+    short, long = with_stay(5), with_stay(30)
+    assert failed(long) <= failed(short)
+    assert long.rule_tests[1].margin_years < short.rule_tests[1].margin_years
+    assert short.battery_action != BATTERY_NOW or long.battery_action == BATTERY_NOW
 
 
 @pytest.mark.parametrize("name", NAMES)

@@ -19,7 +19,8 @@ because a flat-tariff result carries materially more uncertainty.
 
 Solar is a clear-sky day for each date under a seasonal envelope (southern
 hemisphere: highest in December), with cloudy days, scaled so that the year's
-export without a battery equals the export on the bill.
+export without a battery equals the export on the bill -- or, for solar the
+household does not have yet, to capacity × the assumed annual yield.
 
 The assumptions are in config/assumptions.yaml.
 """
@@ -138,10 +139,9 @@ def _period_on(periods: tuple[BillingPeriod, ...], day: date) -> BillingPeriod:
 
 def _solar(profile: HouseholdProfile, load: np.ndarray, dates: list[date],
            assumptions: Assumptions) -> np.ndarray:
-    """Generation scaled so that, without a battery, the year's export matches the bill."""
-    target = profile.annual_solar_export_kwh
-    if target is None:
-        raise ValueError(f"{profile.name}: has solar, but no annual export to scale it to")
+    """Generation for the year. Solar the bill shows is scaled so that, without a
+    battery, the year's export matches the bill; solar the household does not
+    have yet (a revisit sweep) is scaled to capacity × the assumed annual yield."""
     # Relative output: timing from the clear-sky day, the day's amount from the
     # seasonal envelope, less on cloudy days.
     relative = np.concatenate([
@@ -149,6 +149,9 @@ def _solar(profile: HouseholdProfile, load: np.ndarray, dates: list[date],
         * _cloudiness(index, assumptions)
         for index, day in enumerate(dates)
     ])
+    target = profile.annual_solar_export_kwh
+    if target is None:
+        return relative * profile.solar_kw * assumptions.solar_yield_kwh_per_kw / relative.sum()
     # Export only grows with generation, so bisect on the scale.
     low, high = 0.0, (target + load.sum()) / relative.sum()
     for _ in range(60):

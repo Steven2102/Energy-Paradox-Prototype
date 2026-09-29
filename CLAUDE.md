@@ -84,6 +84,10 @@ size_kwh      # recommended usable capacity, or None
 basis         # every term of the headline equation, named:
               #   kwh_shifted, r_out, r_in, efficiency,
               #   annual_saving, demand_saving, battery_cost, rebate, payback_years
+rule_tests    # each limit of the decision rule — warranty, expected stay — passed, failed
+              #   or not testable, and by how many years: the justification must name a
+              #   failed one
+limited_by    # the binding constraint: what stops the battery shifting more (test 5)
 
 near_term     # what this costs and disrupts in year 1
 long_term     # cumulative position by year N, and the crossover year
@@ -92,14 +96,26 @@ assumptions   # name, value, source, date — the ones that actually moved the r
 drivers       # which of the household's stated priorities produced this answer
 revisit_if    # computed thresholds at which `action` changes
 unmodelled    # charges present on the bill that this version does not price (rule 9)
+
+# so the reasoning can be walked through:
+battery_action      # the decision rule's answer about a battery, before solar_first outranks it
+solar               # the indicative solar comparison behind solar_first; None with solar already
+time_of_day_source  # "bill" or "form": where the within-day shape came from (form: less certain)
+evaluated_kwh       # the usable capacity the figures were computed for
 ```
 
 **`revisit_if` is computed, not authored.** For each parameter in a defined sweep set —
-feed-in tariff, rate spread, battery cost, price growth rate, adding solar, adding an EV,
-expected years in the home — re-run the engine until `action` flips, and report the
-threshold. If it does not flip within a plausible range, say that instead. This is the
-same re-run machinery the follow-up chat needs, so it is shared work rather than extra
-work, and it is the cheapest available substitute for genuine over-time support.
+battery cost, feed-in tariff, rate spread, adding solar — re-run the engine until `action`
+flips, and report the threshold. If it does not flip within a plausible range, say that
+instead. This is the same re-run machinery the follow-up chat needs, so it is shared work
+rather than extra work, and it is the cheapest available substitute for genuine over-time
+support.
+
+Three parameters were cut from the sweep set deliberately: price growth rate, adding an
+EV, and expected years in the home. (The stay still enters through the decision rule, and
+`rule_tests` gives its margin.) Price growth is the one worth adding later: the reference
+household's peak rate rose 28% in a year, so "at 8% annual growth this passes in year N"
+would be a strong statement.
 
 **`near_term` and `long_term` are a running cumulative position**, not adjectives. Year 1:
 −$9,000 + $237. Year 10: −$6,630. Crossover: year 38. Contrasting the two is arithmetic,
@@ -185,7 +201,7 @@ Facts about the Queensland market and the reference data, not scope decisions.
 - **Battery value is often demand-limited, not capacity-limited.** The reference household consumes 4.3 kWh/day in the peak window, so capacity beyond roughly 6 kWh has little left to shift. Commercial calculators routinely propose 10–13 kWh to households like this. Surfacing that gap is close to the point of the artifact.
 - **Do not hardcode a peak season.** The reference household is **winter**-peaking — 34.3 kWh/day in August against 14.8 in March, a 2.3× swing driven by overnight shoulder load. Derive seasonality from the uploaded bills; never from an assumed Brisbane profile.
 - **One year of bills is not a stable baseline.** Same-season year-on-year movement in the reference data reaches ±30%. Do not present a single-year projection as precise.
-- **An EV does not on its own make a battery worthwhile.** EV charging lands overnight in the shoulder window, not in the peak window a battery serves, so it does not increase addressable load. The chain that works is: EV → consumption rises → **solar** becomes worthwhile → solar creates the surplus that makes a battery worthwhile. A demo built on "add an EV, battery becomes good" will not survive contact with the arithmetic.
+- **An EV does not on its own make a battery worthwhile.** EV charging lands overnight in the shoulder window, not in the peak window a battery serves, so it does not increase addressable load. The longer chain — EV → consumption rises → **solar** becomes worthwhile → solar creates the surplus that makes a battery worthwhile — fails at its last step for the reference household. Solar does come first there (`solar_first`), but no amount of it makes the battery pay: at September 2026 prices and rebate, the payback bottoms out at 13.5 years from about 6.6 kW upward, outside the 10-year warranty. In winter the battery is already full on most days and empties into the peak window and then the overnight shoulder load; in summer it never fills, because solar covers the early peak itself and little evening load is left. A demo built on "add an EV, battery becomes good" — or "add solar, battery becomes good" — will not survive contact with the arithmetic.
 - **Observed price growth is not CPI.** Between 2025 and 2026 this plan's peak rate rose 28% and shoulder 33%. A CPI assumption understates what households have seen; make the growth rate an explicit, visible input.
 - SEQ feed-in tariffs are roughly 3–10 c/kWh.
 - Battery cost behaves as **fixed + variable × kWh**, not pure $/kWh — a flat per-kWh model misprices small systems badly.
@@ -218,6 +234,7 @@ src/
   generator.py        # window totals + form answers -> load shape
   dispatch.py         # -> kwh_shifted
   finance.py          # the headline equation
+  engine.py           # one household through the whole calculation; re-runnable
   recommend.py        # the structured recommendation object
   revisit.py          # parameter sweeps -> computed revisit_if thresholds
   explain.py          # LLM justification, from computed values only
@@ -229,6 +246,8 @@ tests/
   test_finance.py
   test_rebate.py
   test_run_fixtures.py
+  test_generator.py
+  test_recommend.py
 app.py
 run_fixtures.py       # console runner: every fixture through the engine
 pytest.ini            # puts the repo root on the test import path
@@ -299,15 +318,15 @@ Considered during planning and deliberately excluded. If you find these describe
 3. Generator — distribute within window totals; handle the flat-tariff no-shape case.
 4. Recommendation — the full object from "What a recommendation is", including the
    `battery_not_yet`, `solar_first` and declaration paths. Tests 5–8.
-5. Bill parsing — registry of extractors, LLM fallback. Test 4 applies.
-6. LLM justification from computed values.
+5. LLM justification from computed values.
+6. Bill parsing — registry of extractors, LLM fallback. Test 4 applies.
 7. Web app: upload, question fields, results.
 8. Follow-up chat — intent classification and the counterfactual re-run path.
 9. Demo scenario and rehearsal.
 
 **Stage 4 is the floor** — from there a working, justified recommendation exists with real numbers from a real household.
 
-Bill parsing is deliberately *after* the engine: it is the only stage with a manual fallback, because `fixtures/reference_household.yaml` already holds hand-verified values. If extraction is unfinished on the day, the demo still runs. Dispatch has no such escape hatch, so it goes first.
+Bill parsing is deliberately *after* the engine: it is the only stage with a manual fallback, because `fixtures/reference_household.yaml` already holds hand-verified values. If extraction is unfinished on the day, the demo still runs. Dispatch has no such escape hatch, so it goes first. For the same reason the LLM justification now comes before bill parsing: it is the least tested part of the build, so it gets the earlier slot, and bill parsing is the stage that can slip.
 
 ## Conventions
 

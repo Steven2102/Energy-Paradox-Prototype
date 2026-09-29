@@ -138,6 +138,22 @@ def simulate(year: Year, *, capacity_kwh: float, power_kw: float, efficiency: fl
     )
 
 
+def worth_serving(year: Year, *, efficiency: float, marginal_throughput_cost_aud_per_kwh: float,
+                  horizon_intervals: int) -> np.ndarray:
+    """The half-hours a battery with room to spare would serve: the household
+    imports, and some energy in the horizon before it -- surplus at the feed-in
+    tariff, or grid import at its rate -- beats importing by more than wear
+    after losses. simulate() never discharges outside them."""
+    importing = year.load - year.solar > EPSILON
+    cost_to_store = np.where(year.solar > year.load,
+                             np.minimum(year.import_rate, year.feed_in), year.import_rate)
+    padded = np.concatenate([np.full(horizon_intervals, np.inf), cost_to_store])
+    windows = np.lib.stride_tricks.sliding_window_view(padded, horizon_intervals)
+    cheapest_before = windows[:len(cost_to_store)].min(axis=1)
+    margin = year.import_rate - cheapest_before / efficiency
+    return importing & (margin > marginal_throughput_cost_aud_per_kwh)
+
+
 def _highest_from_each_point_on(values: np.ndarray) -> np.ndarray:
     """[1, 3, 2] -> [3, 3, 2]: the most the battery holds from each half-hour to the end."""
     return np.maximum.accumulate(values[::-1])[::-1]

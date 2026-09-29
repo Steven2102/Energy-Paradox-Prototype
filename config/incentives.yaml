@@ -1,6 +1,5 @@
 # Federal battery rebate — Cheaper Home Batteries Program (Australia).
 #
-# sourced:  2026-09-26
 # sources:  Solar Choice, "Changes to the Cheaper Home Batteries Program, 1 May 2026"
 #           https://www.solarchoice.net.au/learn/solar-rebates/government-battery-rebate/changes-1-may-2026/
 #           DCCEEW programme page
@@ -11,6 +10,7 @@
 # sold at a market price. Both inputs move, so both are recorded separately.
 
 verified: true
+sourced: 2026-09-26
 
 stc_price_aud: 38.00
 # Market price, fluctuates. $38 is the figure the sources use in worked examples.

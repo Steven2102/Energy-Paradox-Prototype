@@ -3,12 +3,15 @@
     python run_fixtures.py [--install-date YYYY-MM-DD]
 
 For each household in fixtures/, prints the tariff it is on, its annual
-consumption by window, and the payback calculation with every term shown
-separately, then a one-line-per-household summary.
+consumption by window, the payback calculation with every term shown
+separately and the recommendation built from it, then a one-line-per-household
+summary.
 
-kwh_shifted, r_out and r_in come from the half-hourly dispatch simulation,
-run on the year src/generator.py builds from each household's billing
-periods, tariff windows and form answers.
+Every figure comes from one run of the engine (src/engine.py): the year
+src/generator.py builds from the billing periods, tariff windows and form
+answers; the half-hourly dispatch over it; the headline equation; and the
+decision rule. src/recommend.py adds the rest of the recommendation, including
+the revisit_if sweeps, which re-run the engine.
 
 The rebate depends on the install date, which defaults to today. Pass
 --install-date to reproduce a run exactly.
@@ -20,12 +23,12 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from src import finance
 from src.config import Config, load_config
-from src.dispatch import simulate
-from src.finance import Payback
-from src.generator import Year, household_year
-from src.profile import HouseholdProfile, check_matches_tariff, load_fixtures
+from src.engine import SOLAR_FIRST, Evaluation, evaluate
+from src.generator import Year
+from src.profile import HouseholdProfile, load_fixtures
+from src.recommend import Recommendation, recommend
+from src.revisit import Revisit
 from src.tariff import UNMODELLED, Tariff, describe_hours, unmodelled_components
 
 RULE = "=" * 88
@@ -39,13 +42,14 @@ def main(argv: list[str] | None = None) -> None:
     results = []
     for profile in load_fixtures():
         tariff = config.tariffs[profile.tariff_ref]
-        check_matches_tariff(profile, tariff)
-        year = household_year(profile, tariff, config.assumptions)
+        evaluation = evaluate(profile, tariff, config, args.install_date)
+        recommendation = recommend(evaluation)
         print_household(profile)
         print_tariff(tariff)
-        print_consumption(profile, tariff, year)
-        result = print_payback(profile, tariff, config, args.install_date, year)
-        results.append((profile, tariff, result))
+        print_consumption(profile, tariff, evaluation.year)
+        print_payback(evaluation)
+        print_recommendation(recommendation)
+        results.append((evaluation, recommendation))
 
     print_summary(results)
 
@@ -63,10 +67,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def print_banner(config: Config, install_date: date) -> None:
-    print("Stage 3: generator")
-    print("  kwh_shifted, r_out and r_in come from a half-hourly dispatch of one year, shaped")
-    print("  across the year by the billing periods and within the day by the tariff windows")
-    print("  and the form (see each household).")
+    print("Stage 4: recommendation")
+    print("  Each household: a half-hourly dispatch of one year, shaped by its billing periods,")
+    print("  tariff windows and form answers; the headline equation; and the recommendation")
+    print("  built from them, with thresholds found by re-running the engine.")
     print(f"  Install date {install_date}, which sets the rebate (change with --install-date).")
     unverified = []
     if not config.batteries.verified:
@@ -161,50 +165,22 @@ def describe_form(profile: HouseholdProfile) -> str:
     return f"occupancy {occupancy}" + (f", air conditioning {aircon}" if aircon else "")
 
 
-def print_payback(profile: HouseholdProfile, tariff: Tariff, config: Config,
-                  install_date: date, year: Year) -> Payback:
+def print_payback(evaluation: Evaluation) -> None:
+    config, tariff = evaluation.config, evaluation.tariff
     batteries = config.batteries
-    size_kwh = batteries.default_size_kwh
-    print(f"\nPayback  {size_kwh:g} kWh battery (default_size_kwh), {batteries.power_kw:g} kW, "
-          f"{batteries.round_trip_efficiency:.0%} round trip, installed {install_date}")
-
-    dispatched = simulate(
-        year,
-        capacity_kwh=size_kwh,
-        power_kw=batteries.power_kw,
-        efficiency=batteries.round_trip_efficiency,
-        marginal_throughput_cost_aud_per_kwh=batteries.marginal_throughput_cost_aud_per_kwh,
-        horizon_intervals=config.assumptions.dispatch_horizon_intervals,
-    )
-
+    size_kwh = evaluation.battery_kwh
+    r, rebate, dispatched = evaluation.payback, evaluation.rebate, evaluation.dispatch
     cost = batteries.cost_model
-    battery_cost = finance.battery_cost_aud(size_kwh, cost.fixed_aud, cost.variable_aud_per_kwh)
-    incentives = config.incentives
-    period = incentives.deeming_period_on(install_date)
-    rebate = finance.rebate(
-        size_kwh,
-        deeming_factor=period.factor,
-        stc_price_aud=incentives.stc_price_aud,
-        taper=incentives.capacity_taper,
-    )
+    period = config.incentives.deeming_period_on(evaluation.install_date)
+    print(f"\nPayback  {size_kwh:g} kWh battery (default_size_kwh), {batteries.power_kw:g} kW, "
+          f"{batteries.round_trip_efficiency:.0%} round trip, installed {evaluation.install_date}")
 
     # Demand charges are not modelled yet, so demand_saving is zero. On a
     # tariff that has one, that zero means "not calculated", not "nothing".
-    demand_saving = 0.0
     if tariff.demand is None:
         demand_note = "no demand charge on this tariff"
     else:
         demand_note = "NOT MODELLED: not calculated, rather than nothing"
-
-    r = finance.payback(
-        kwh_shifted=dispatched.kwh_shifted,
-        r_out=dispatched.r_out,
-        r_in=dispatched.r_in,
-        efficiency=batteries.round_trip_efficiency,
-        demand_saving=demand_saving,
-        battery_cost=battery_cost,
-        rebate=rebate.rebate_aud,
-    )
 
     undefined = "undefined"
     print_term("kwh_shifted", f"{r.kwh_shifted:,.0f}", "kWh/yr", "dispatch")
@@ -257,38 +233,113 @@ def print_payback(profile: HouseholdProfile, tariff: Tariff, config: Config,
     else:
         print(f"                = {r.payback_years:.1f} years")
 
-    unmodelled = unmodelled_components(tariff)
-    if unmodelled:
+    if evaluation.unmodelled:
         print()
         print("  PARTIAL PICTURE. This tariff has charges this version does not price:")
-        for component, description in unmodelled.items():
+        for component, description in evaluation.unmodelled.items():
             print(f"    {component}: {description}")
         print("  The saving and payback above leave them out, so they are not the answer")
         print("  for this household.")
-    return r
 
 
 def print_term(name: str, value: str, unit: str, source: str) -> None:
     print(f"  {name:<15}{value:>11}  {unit:<8}{source}")
 
 
-def print_summary(results: list[tuple[HouseholdProfile, Tariff, Payback]]) -> None:
+def print_recommendation(rec: Recommendation) -> None:
+    print(f"\nRecommendation  {rec.action}")
+    print(f"  The battery on its own: {rec.battery_action}. "
+          f"Payback {years(rec.basis['payback_years'])}, against:")
+    for test in rec.rule_tests:
+        if test.passed is None:
+            print(f"    {test.limit:<14} not given on the form")
+        else:
+            where = "inside" if test.passed else "OUTSIDE"
+            print(f"    {test.limit:<14} {test.limit_years:g} years: {where} it by "
+                  f"{abs(test.margin_years):.1f} years")
+    if rec.solar is not None:
+        outranks = "; outranks the battery" if rec.action == SOLAR_FIRST else ""
+        print(f"  Solar (INDICATIVE, not a precise payback): {rec.solar.kw:g} kW would pay back in "
+              f"about {rec.solar.payback_years:.0f} years{outranks}")
+
+    limit = rec.limited_by
+    print(f"  Limited by: {limit.label}. At most {limit.max_daily_kwh:.1f} kWh delivered in a day "
+          f"against {limit.capacity_kwh:g} kWh;")
+    print(f"    full on {limit.days_full} days; {limit.unmet_kwh:,.0f} kWh worth serving left unmet")
+
+    near, positions = rec.near_term, dict(rec.long_term.positions)
+    last = max(positions)
+    crossover = rec.long_term.crossover_year
+    print(f"  Position: year 1 {money(near.position_after_year_1, 0)} "
+          f"(outlay {money(near.net_outlay, 0)}, saving {money(near.first_year_saving, 0)}); "
+          f"year {last} {money(positions[last], 0)}; "
+          f"crossover {'year ' + str(crossover) if crossover else 'never'}")
+
+    print("  Not priced:")
+    for item in rec.not_priced:
+        flag = f"   <- the household's stated priority: {item.stated_priority}" \
+            if item.stated_priority else ""
+        print(f"    {item.item}{flag}")
+    print("  Drivers:")
+    for driver in rec.drivers:
+        print(f"    {driver.priority or '(none)'}: {driver.effect}")
+    print("  Revisit if:")
+    for revisit in rec.revisit_if:
+        print(f"    {revisit.parameter:<15}{describe_revisit(revisit)}")
+    print("  Assumptions:")
+    for item in rec.assumptions:
+        value = ("not given" if item.value is None
+                 else f"{item.value:,g}" if isinstance(item.value, float) else item.value)
+        dated = f", {item.date}" if item.date else ""
+        ranged = f"  range {list(item.range)}" if item.range else ""
+        print(f"    {item.name}: {value}  ({item.source}{dated}){ranged}")
+        if item.effect:
+            print(f"      -> {item.effect}")
+
+
+def describe_revisit(revisit: Revisit) -> str:
+    if revisit.not_applicable:
+        return f"not applicable: {revisit.not_applicable}"
+    low, high = (describe_value(revisit, value) for value in revisit.searched)
+    tracked = "the battery answer" if revisit.tracks == "battery_action" else "the answer"
+    if revisit.to_action is None:
+        return f"no change in {tracked} within the range searched, {low} to {high}"
+    return (f"{revisit.from_action} -> {revisit.to_action} at "
+            f"{describe_value(revisit, revisit.threshold)} "
+            f"(now {describe_value(revisit, revisit.current)})")
+
+
+def describe_value(revisit: Revisit, value: float) -> str:
+    if revisit.parameter == "battery cost":
+        return f"${value:,.0f}"
+    if revisit.parameter == "adding solar":
+        return f"{value:.1f} kW"
+    if revisit.parameter == "rate spread":
+        return f"{value * 100:+.1f} c/kWh"
+    return f"{value * 100:.1f} c/kWh"
+
+
+def years(value: float) -> str:
+    return "never" if math.isinf(value) else f"{value:.1f} years"
+
+
+def print_summary(results: list[tuple[Evaluation, Recommendation]]) -> None:
     print()
     print(RULE)
     print("Summary")
-    print(f"  {'household':<21}{'tariff':<20}{'windows':>7}  {'solar':<8}"
-          f"{'saving/yr':>11}{'payback':>10}")
-    for profile, tariff, r in results:
+    print(f"  {'household':<21}{'tariff':<20}{'solar':<8}{'saving/yr':>11}{'payback':>10}"
+          f"   {'action'}")
+    for evaluation, rec in results:
+        profile, tariff, r = evaluation.profile, evaluation.tariff, evaluation.payback
         solar = f"{profile.solar_kw:g} kW" if profile.has_solar else "none"
         payback = "never" if math.isinf(r.payback_years) else f"{r.payback_years:.1f} yr"
-        unmodelled = unmodelled_components(tariff)
-        note = f"  PARTIAL: {', '.join(unmodelled)} not priced" if unmodelled else ""
-        print(f"  {profile.name:<21}{tariff.id:<20}{len(tariff.energy_windows):>7}  {solar:<8}"
-              f"{money(r.annual_saving):>11}{payback:>10}{note}")
+        note = f"  (PARTIAL: {', '.join(rec.unmodelled)} not priced)" if rec.unmodelled else ""
+        print(f"  {profile.name:<21}{tariff.id:<20}{solar:<8}"
+              f"{money(r.annual_saving):>11}{payback:>10}   {rec.action}{note}")
 
 
-def money(amount: float) -> str:
-    return f"${amount:,.2f}"
+def money(amount: float, decimals: int = 2) -> str:
+    return f"-${-amount:,.{decimals}f}" if amount < 0 else f"${amount:,.{decimals}f}"
 
 
 if __name__ == "__main__":

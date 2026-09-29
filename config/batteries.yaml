@@ -1,6 +1,5 @@
 # Battery cost model — Australian residential, installed, GST inclusive.
 #
-# sourced:  2026-09-26
 # source:   Solar Calculator Australia, battery price guide 2026
 #           https://solarcalculator.com.au/battery-storage/price/
 #           Quoted pre-rebate installed: 10 kWh $11,400 · 13.5 kWh $13,900
@@ -14,6 +13,7 @@
 # pair, and changing one alone silently changes the implied other.
 
 verified: true
+sourced: 2026-09-26
 
 cost_model:
   basis: installed, pre-rebate, GST inclusive
