@@ -23,8 +23,6 @@ from_bill:
   network: Energex
   plan: synthetic flat
   tariff_ref: generic_flat_2026
-  has_solar: true
-  solar_kw: 6.6
   has_controlled_load: false
 
   annual_kwh_total: 4800          # grid import + self-consumed solar
@@ -67,18 +65,17 @@ from_bill:
     driver: afternoon and evening air conditioning
 
 from_form:
-  household_size: 2
-  occupancy_pattern: both_out_weekdays
-  has_aircon: true
-  aircon_use: summer_evenings
-  controlled_load_appliance: none
-  has_pool: false
-  roof_orientation: north
-  roof_shading: none
-  usable_roof_area_m2: 40
+  has_solar: true
+  solar_kw: 6.6
+  has_battery: false
+  home_during_the_day: false      # both out on weekdays
+  work_from_home_days: 0
+  aircon: split                   # summer evenings
+  pool_pump: none
+  hot_water: null                 # no controlled load on the bill; the type is not given
+  ev: none
   years_expected_in_home: 12
-  max_upfront_spend_aud: 15000
-  considering_ev: false
+  max_upfront_aud: 15000
   motivation: [lower_bill, independence]
 
 notes:

@@ -10,17 +10,24 @@ first period's start; a day after the last period repeats that period.
 Within the day -- from the tariff's window split where the bill has one. A
 time-of-use bill says how much was used in each window, so only the shape
 inside each window is generated. A flat bill has one window covering the whole
-day, so the entire daily shape comes from the form: the occupancy answer, with
-weekdays and weekends differing where it implies they do, and the
-air-conditioning answer, which places use above the household's lowest period
-in the air-conditioning hours. There is no special case: the asymmetry follows
+day, so the entire daily shape comes from the form: the occupancy answers,
+which give each day a home or an away shape, and the air-conditioning answer,
+which places use above the household's lowest period in that type's hours. There is no special case: the asymmetry follows
 from how many windows the bill has, and Year.time_of_day_source reports it,
 because a flat-tariff result carries materially more uncertainty.
 
 Solar is a clear-sky day for each date under a seasonal envelope (southern
 hemisphere: highest in December), with cloudy days, scaled so that the year's
-export without a battery equals the export on the bill -- or, for solar the
-household does not have yet, to capacity × the assumed annual yield.
+export without a battery equals the export on the bill -- or, where the bill
+shows none, to capacity × the assumed annual yield.
+
+An EV the household does not have yet (the adding-an-EV sweep) is charging the
+bills do not contain, so it is added on top of them, overnight.
+
+Not modelled: the running hours of a pool pump on the main circuit, the
+heating hours of electric hot water on the main circuit, and the charging
+hours of an EV already owned. Their use is in the bill's totals and follows
+the day's shape; the recommendation declares each.
 
 The assumptions are in config/assumptions.yaml.
 """
@@ -30,7 +37,7 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from src.config import Assumptions, Occupancy, ShapeBlock
+from src.config import Assumptions, ShapeBlock
 from src.profile import BillingPeriod, HouseholdProfile
 from src.tariff import SLOTS_PER_DAY, Tariff, window_by_slot
 
@@ -76,16 +83,14 @@ def _load(profile: HouseholdProfile, tariff: Tariff, dates: list[date],
     by_slot = window_by_slot(tariff)
     slots_in = {window.name: np.array([w.name == window.name for w in by_slot])
                 for window in tariff.energy_windows}
-    occupancy = _occupancy(profile, assumptions)
-    weekday = _spread_blocks(assumptions.day_shapes[occupancy.weekday])
-    weekend = _spread_blocks(assumptions.day_shapes[occupancy.weekend])
+    shape_on = _occupancy(profile, assumptions)
     aircon = _aircon(profile, assumptions)
     lowest = min(period.daily_kwh for period in profile.billing_periods)
 
     days = []
     for day in dates:
         period = _period_on(profile.billing_periods, day)
-        shape = weekday if day.weekday() < 5 else weekend
+        shape = shape_on(day)
         if aircon is not None and period.daily_kwh > 0:
             # Use above the household's lowest period is air conditioning.
             excess = (period.daily_kwh - lowest) / period.daily_kwh
@@ -95,27 +100,53 @@ def _load(profile: HouseholdProfile, tariff: Tariff, dates: list[date],
             # The bill fixes how much falls in each window; the shape only spreads it.
             load[slots] = period.kwh_by_window[window] / period.days * shape[slots] / shape[slots].sum()
         days.append(load)
-    return np.concatenate(days)
+    return np.concatenate(days) + _added_ev(profile, assumptions)
 
 
-def _occupancy(profile: HouseholdProfile, assumptions: Assumptions) -> Occupancy:
-    answer = profile.form.get("occupancy_pattern") or "not_stated"
-    if answer not in assumptions.occupancy:
-        raise ValueError(f"{profile.name}: config/assumptions.yaml has no day shapes for "
-                         f"occupancy {answer!r}")
-    return assumptions.occupancy[answer]
+def _occupancy(profile: HouseholdProfile, assumptions: Assumptions):
+    """The day shape for a date. Weekends, a weekday someone is home, and each
+    work-from-home day (counted from Monday) take the home shape; other weekdays
+    the away shape. Unanswered, every day takes the not_stated shape."""
+    shapes = {kind: _spread_blocks(assumptions.day_shapes[name])
+              for kind, name in vars(assumptions.occupancy).items()}
+    at_home = profile.form.get("home_during_the_day")
+    work_from_home = profile.form.get("work_from_home_days") or 0
+
+    def shape_on(day: date) -> np.ndarray:
+        if at_home is None:
+            return shapes["not_stated"]
+        weekday = day.weekday()
+        return shapes["home"] if weekday >= 5 or at_home or weekday < work_from_home \
+            else shapes["away"]
+
+    return shape_on
 
 
 def _aircon(profile: HouseholdProfile, assumptions: Assumptions) -> np.ndarray | None:
     """Half-hourly shares of air-conditioning use, or None where the form reports none."""
-    use = profile.form.get("aircon_use")
-    if not profile.form.get("has_aircon") or use in (None, "none"):
+    kind = profile.form.get("aircon")
+    if kind in (None, "none"):
         return None
-    if use not in assumptions.aircon_hours:
+    if kind not in assumptions.aircon_hours:
         raise ValueError(f"{profile.name}: config/assumptions.yaml has no air-conditioning "
-                         f"hours for {use!r}")
-    start, end = assumptions.aircon_hours[use]
+                         f"hours for {kind!r}")
+    start, end = assumptions.aircon_hours[kind]
     return _spread_blocks((ShapeBlock(hours=(start, end), share=1.0, share_range=None),))
+
+
+def _added_ev(profile: HouseholdProfile, assumptions: Assumptions) -> np.ndarray:
+    """EV charging the bills do not contain, spread evenly over the charging hours
+    of every day."""
+    if not profile.added_ev_kwh_per_year:
+        return np.zeros(INTERVALS)
+    start, end = (int(hour * 2) for hour in assumptions.ev_charging_hours)
+    charging = np.zeros(SLOTS_PER_DAY, dtype=bool)
+    if start < end:
+        charging[start:end] = True
+    else:  # past midnight
+        charging[start:] = charging[:end] = True
+    day = np.where(charging, profile.added_ev_kwh_per_year / DAYS / charging.sum(), 0.0)
+    return np.tile(day, DAYS)
 
 
 def _spread_blocks(blocks: tuple[ShapeBlock, ...]) -> np.ndarray:

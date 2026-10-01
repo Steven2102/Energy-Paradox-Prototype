@@ -2,6 +2,9 @@
 with a stand-in provider. Nothing here reaches the network."""
 
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -56,8 +59,22 @@ def test_a_provider_the_file_does_not_implement_says_where_to_add_it(settings, m
         llm.complete("system", "user")
 
 
-def test_with_live_calls_off_an_unrecorded_input_is_an_error(stand_in, monkeypatch):
+def test_offline_an_uncached_input_raises_at_once_naming_it_its_key_and_the_warm_up(
+        stand_in, monkeypatch):
     monkeypatch.setattr(llm, "LIVE", False)
-    with pytest.raises(llm.LLMError, match="LLM_RECORD=1"):
-        llm.complete("system", "never recorded")
-    assert stand_in == []
+    with pytest.raises(llm.NotCached) as missing:
+        llm.complete("system", "never recorded", about="household_x")
+    key = llm.cache_key("system", "never recorded")
+    assert (missing.value.about, missing.value.key) == ("household_x", key)
+    assert key in str(missing.value)
+    assert "LLM_LIVE=1 python run_fixtures.py --explain --install-date" in str(missing.value)
+    assert stand_in == []  # nothing was sent
+
+
+def test_offline_is_the_default():
+    environment = {name: value for name, value in os.environ.items()
+                   if name not in ("LLM_LIVE", "LLM_RECORD")}
+    live = subprocess.run([sys.executable, "-c", "from src import llm; print(llm.LIVE)"],
+                          cwd=llm.ROOT, env=environment, capture_output=True, text=True,
+                          check=True)
+    assert live.stdout.strip() == "False"

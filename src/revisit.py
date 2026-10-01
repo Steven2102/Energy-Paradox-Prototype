@@ -8,10 +8,16 @@ one tolerance of the range's edge counts as no change: the edge is where the
 search stopped, not something it found. Required test 8 re-runs every reported
 threshold, and both ends of every range reported unchanged, to check them.
 
-The sweep set is four parameters: battery cost, feed-in tariff, rate spread and
-adding solar. Adding solar tracks the battery answer rather than the final
-action: any solar at all makes solar_first inapplicable, so the question it
-answers is whether solar would make a battery worthwhile.
+The sweep set is five parameters: battery cost, feed-in tariff, rate spread,
+adding solar and adding an EV. Adding solar tracks the battery answer rather
+than the final action: any solar at all makes solar_first inapplicable, so the
+question it answers is whether solar would make a battery worthwhile. Adding an
+EV adds overnight charging the bills do not contain.
+
+Where the household says it plans an EV, that sweep's result is promoted to a
+named, dated condition (PlannedChange): what the answer is with a typical EV's
+charging, and whether the stated year lands inside the stated stay. It is read
+off the sweep; nothing is re-run for it.
 
 A threshold can move the label without moving the advice. Where the action flips
 between solar_first and a battery answer that is the same on both sides, what
@@ -26,7 +32,7 @@ from dataclasses import dataclass, replace
 from functools import cache
 from typing import Callable
 
-from src.engine import Evaluation, assess, evaluate
+from src.engine import Evaluation, assess, evaluate, tariff_for
 
 # How finely each threshold is located, in the parameter's own unit.
 TOLERANCE = {
@@ -34,6 +40,7 @@ TOLERANCE = {
     "feed-in tariff": 0.001,    # $/kWh
     "rate spread": 0.001,       # $/kWh
     "adding solar": 0.1,        # kW
+    "adding an EV": 100.0,      # kWh a year
 }
 
 
@@ -45,6 +52,17 @@ class Side:
     battery_action: str
     payback_years: float                # the battery's
     solar_payback_years: float | None   # indicative; None where the household has solar
+
+
+@dataclass(frozen=True)
+class PlannedChange:
+    """A change the household says it plans, as a named, dated condition."""
+
+    year: int | None           # roughly when; None where the form does not say
+    at: float                  # the swept value standing for it: a typical EV's charging
+    action_then: str           # the tracked action at that value, read off the sweep
+    stay_ends: float | None    # the year the stated stay runs out; None where not given
+    inside_stay: bool | None   # whether `year` comes before then; None where either is missing
 
 
 @dataclass(frozen=True)
@@ -62,6 +80,7 @@ class Revisit:
     not_applicable: str | None             # why the sweep does not apply, where it does not
     either_side: tuple[Side, Side] | None = None  # at before and at threshold, where there is one
     advice_changes: bool | None = None     # the battery answer differs either side (see above)
+    planned: PlannedChange | None = None   # the household's own plan, where it states one
 
 
 def revisit_if(evaluation: Evaluation) -> tuple[Revisit, ...]:
@@ -70,6 +89,7 @@ def revisit_if(evaluation: Evaluation) -> tuple[Revisit, ...]:
         _feed_in(evaluation),
         _rate_spread(evaluation),
         _adding_solar(evaluation),
+        _adding_ev(evaluation),
     )
 
 
@@ -129,17 +149,50 @@ def _adding_solar(evaluation: Evaluation) -> Revisit:
         return _not_applicable(evaluation, "adding solar", "kW of panels", "battery_action",
                                f"the household already has {profile.solar_kw:g} kW")
     config = evaluation.config
-    tariff = evaluation.tariff
-    if tariff.feed_in_tariff_aud_per_kwh is None:
-        tariff = replace(tariff,
-                         feed_in_tariff_aud_per_kwh=config.assumptions.new_solar_feed_in_aud_per_kwh)
 
     def at(kw: float) -> Evaluation:
-        with_solar = replace(profile, has_solar=True, solar_kw=kw, annual_solar_export_kwh=None)
-        return evaluate(with_solar, tariff, config, evaluation.install_date)
+        # Hypothetical sizes, below the form's smallest system too, so set directly.
+        with_solar = replace(profile, form={**profile.form, "has_solar": True, "solar_kw": kw},
+                             annual_solar_export_kwh=None)
+        return evaluate(with_solar, tariff_for(with_solar, evaluation.tariff, config), config,
+                        evaluation.install_date)
 
     return sweep(evaluation, "adding solar", "kW of panels", "battery_action",
                  0.0, config.assumptions.revisit_ranges.added_solar_kw, at)
+
+
+def _adding_ev(evaluation: Evaluation) -> Revisit:
+    profile, config = evaluation.profile, evaluation.config
+    unit = "kWh a year of EV charging"
+    if profile.form.get("ev") == "have":
+        return _not_applicable(evaluation, "adding an EV", unit, "action",
+                               "the household already has an EV")
+
+    def at(kwh: float) -> Evaluation:
+        return evaluate(replace(profile, added_ev_kwh_per_year=kwh), evaluation.tariff, config,
+                        evaluation.install_date)
+
+    revisit = sweep(evaluation, "adding an EV", unit, "action",
+                    0.0, config.assumptions.revisit_ranges.added_ev_kwh_per_year, at)
+    if profile.form.get("ev") != "planning":
+        return revisit
+    return replace(revisit, planned=_planned_ev(evaluation, revisit))
+
+
+def _planned_ev(evaluation: Evaluation, revisit: Revisit) -> PlannedChange:
+    """The adding-an-EV result at a typical EV's charging, dated by the form."""
+    typical = evaluation.config.assumptions.ev_kwh_per_year
+    changed = revisit.threshold is not None and revisit.threshold <= typical
+    year = evaluation.profile.form.get("ev_planned_year")
+    stay = evaluation.profile.form.get("years_expected_in_home")
+    stay_ends = evaluation.install_date.year + stay if stay is not None else None
+    return PlannedChange(
+        year=year,
+        at=typical,
+        action_then=revisit.to_action if changed else revisit.from_action,
+        stay_ends=stay_ends,
+        inside_stay=year < stay_ends if year is not None and stay_ends is not None else None,
+    )
 
 
 # ------------------------------------------------------------------ searching
@@ -212,6 +265,8 @@ def describe_value(revisit: Revisit, value: float) -> str:
         return f"${value:,.0f}"
     if revisit.parameter == "adding solar":
         return f"{value:.1f} kW"
+    if revisit.parameter == "adding an EV":
+        return f"{value:,.0f} kWh a year"
     if revisit.parameter == "rate spread":
         return f"{value * 100:+.1f} c/kWh"
     return f"{value * 100:.1f} c/kWh"

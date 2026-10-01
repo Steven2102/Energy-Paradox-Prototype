@@ -23,7 +23,6 @@ from_bill:
   network: Energex
   plan: synthetic demand
   tariff_ref: generic_demand_2026
-  has_solar: false
   has_controlled_load: true
 
   annual_kwh_total: 9200
@@ -79,18 +78,16 @@ from_bill:
     driver: ducted air conditioning
 
 from_form:
-  household_size: 5
-  occupancy_pattern: someone_home_most_days
-  has_aircon: true
-  aircon_use: ducted_whole_house
-  controlled_load_appliance: hot_water
-  has_pool: true
-  roof_orientation: north_west
-  roof_shading: partial_afternoon
-  usable_roof_area_m2: 70
+  has_solar: false
+  has_battery: false
+  home_during_the_day: true       # someone home most days
+  aircon: ducted
+  pool_pump: main_circuit         # the controlled load carries the hot water
+  hot_water: electric_controlled_load
+  ev: planning
+  ev_planned_year: null           # considering one; when is not given
   years_expected_in_home: 20
-  max_upfront_spend_aud: 25000
-  considering_ev: true
+  max_upfront_aud: 25000
   motivation: [lower_bill, backup_power]
 
 notes:

@@ -11,9 +11,11 @@ Nor does the model decide anything. The recommendation, the limits the payback
 failed, the thresholds -- including whether a threshold changes the advice or
 only the label -- and what is left unpriced all arrive decided.
 
-explain() writes the justification; answer() replies to one question about the
-same recommendation, which is the follow-up chat's explain intent (stage 8).
-Both go through src/llm.py, which caches every reply on disk.
+explain() writes the justification. For the follow-up chat (src/followup.py),
+answer() replies to one question about the same recommendation, and compare()
+to a what-if, from the recommendation before and after the change -- refusing
+a reply that leaves out the payback either side. All go through src/llm.py,
+which caches every reply on disk.
 """
 
 import math
@@ -71,8 +73,9 @@ figure as the answer.
 To write the justification: plain English for a homeowner, about 400 words and never more than \
 500. Write \
 prose only, in short paragraphs of full sentences: no bullet points, no numbered lists, no bold, \
-no headings and no tables. Name the recommendation by its label, in quotation marks, exactly as \
-the fact sheet writes it. Cover, in this order:
+no headings and no tables. Where you mention several items, write them into a sentence, joined by \
+commas, never set out one to a line. Name the recommendation by its label, in quotation marks, \
+exactly as the fact sheet writes it. Cover, in this order:
 - the recommendation and the main reason for it;
 - the decision rule: which limit the payback failed and by how much, or why a limit could not \
 be tested;
@@ -95,16 +98,97 @@ class UntraceableFigure(ValueError):
     """A reply used a figure its input does not contain."""
 
 
+class IncompleteAnswer(ValueError):
+    """A what-if reply left out a figure it must give."""
+
+
 def explain(recommendation: Recommendation) -> str:
     """The justification, for the household the recommendation was computed for."""
     message = justification_request(recommendation)
-    return _checked(llm.complete(SYSTEM_PROMPT, message), message)
+    return _checked(llm.complete(SYSTEM_PROMPT, message, about=recommendation.household), message)
 
 
-def answer(recommendation: Recommendation, question: str) -> str:
+def answer(recommendation: Recommendation, question: str, live: bool = False) -> str:
     """A reply to one question, from the recommendation alone."""
     message = question_request(recommendation, question)
-    return _checked(llm.complete(SYSTEM_PROMPT, message), message)
+    return _checked(llm.complete(SYSTEM_PROMPT, message, live=live,
+                                 about=f"{recommendation.household}, asked {question!r}"),
+                    message)
+
+
+def compare(before: Recommendation, after: Recommendation, changed: str, question: str,
+            live: bool = False) -> str:
+    """A reply to a what-if question, from the recommendation before the change and
+    after it. It must give the battery payback both before and after."""
+    message = comparison_request(before, after, changed, question)
+    reply = _checked(llm.complete(SYSTEM_PROMPT, message, live=live,
+                                  about=f"{before.household}, asked {question!r}"), message)
+    missing = [figure for figure in dict.fromkeys(_payback_figure(rec) for rec in (before, after))
+               if figure not in reply]
+    if missing:
+        raise IncompleteAnswer(f"refusing an answer that leaves out the payback before or after "
+                               f"the change: {', '.join(missing)}")
+    return reply
+
+
+def comparison_request(before: Recommendation, after: Recommendation, changed: str,
+                       question: str) -> str:
+    return (f"{comparison_sheet(before, after, changed)}\n\nTHE HOUSEHOLD ASKS\n{question}\n\n"
+            "Answer the question from this comparison, briefly: at most four sentences and under "
+            "100 words, giving the battery payback before and after the change, both exactly as "
+            "written.")
+
+
+def comparison_sheet(before: Recommendation, after: Recommendation, changed: str) -> str:
+    """The figures a what-if changes, before and after, every one formatted here."""
+    def charged(rec: Recommendation) -> str:
+        split = rec.charged_from
+        return (f"{_kwh(split.total_kwh)}, {split.solar_share:.0%} solar surplus and "
+                f"{split.grid_share:.0%} grid import")
+
+    def crossover(rec: Recommendation) -> str:
+        year = rec.long_term.crossover_year
+        return f"year {year}" if year else "never"
+
+    rows = [
+        ("Recommendation", f'"{LABELS[before.action]}"', f'"{LABELS[after.action]}"'),
+        ("Battery size assessed", f"{before.evaluated_kwh:g} kWh", f"{after.evaluated_kwh:g} kWh"),
+        ("Battery payback", _years(before.basis["payback_years"]),
+         _years(after.basis["payback_years"])),
+        ("Annual saving", _money(before.basis["annual_saving"]), _money(after.basis["annual_saving"])),
+        ("Net outlay, the installed price less the rebate", _money(before.near_term.net_outlay),
+         _money(after.near_term.net_outlay)),
+        ("kWh the battery moves in a year", _kwh(before.basis["kwh_shifted"]),
+         _kwh(after.basis["kwh_shifted"])),
+        ("What the battery charged with in a year", charged(before), charged(after)),
+        ("Crossover, the first year the position is no longer negative", crossover(before),
+         crossover(after)),
+    ]
+    rows += [(_limit(old), _verdict(old), _verdict(new))
+             for old, new in zip(before.rule_tests, after.rule_tests)]
+    lines = [f"BEFORE AND AFTER: {changed}. Everything was re-run through the whole model."]
+    lines += [f"- {name}: {old} before; {new} after." for name, old, new in rows]
+    if after.unmodelled:
+        lines.append("- PARTIAL, before and after: a charge on the bill is not priced, so these "
+                     "figures cover energy only and cannot decide the answer.")
+    return "\n".join(lines)
+
+
+def _payback_figure(rec: Recommendation) -> str:
+    """The payback as a reply must carry it: the number, or "never"."""
+    years = rec.basis["payback_years"]
+    return "never" if math.isinf(years) else f"{years:.1f}"
+
+
+def _limit(test) -> str:
+    return "Warranty" if test.limit == "warranty" else "Expected years in the home"
+
+
+def _verdict(test) -> str:
+    if test.passed is None:
+        return "not given, so not tested"
+    where = "inside" if test.passed else "outside"
+    return f"the payback is {where} its {test.limit_years:g} years by {_years(abs(test.margin_years))}"
 
 
 def justification_request(recommendation: Recommendation) -> str:
@@ -112,7 +196,9 @@ def justification_request(recommendation: Recommendation) -> str:
 
 
 def question_request(recommendation: Recommendation, question: str) -> str:
-    return f"{fact_sheet(recommendation)}\n\nTHE HOUSEHOLD ASKS\n{question}\n\nAnswer the question."
+    return (f"{fact_sheet(recommendation)}\n\nTHE HOUSEHOLD ASKS\n{question}\n\n"
+            "Answer the question briefly, answering only what was asked: at most four sentences "
+            "and under 100 words.")
 
 
 def untraceable(reply: str, source: str) -> list[str]:
@@ -180,6 +266,12 @@ def _recommendation(rec: Recommendation) -> str:
                      "turns on how long the household expects to stay, which the form did not give.")
     size = rec.size_kwh if rec.size_kwh is not None else rec.evaluated_kwh
     lines.append(f"- Battery size assessed: {size:g} kWh of usable capacity.")
+    if rec.comfortable_spend is not None:
+        spend = rec.comfortable_spend
+        lines.append(f"- Its net outlay, {_money(spend.net_outlay)}, is {_money(spend.over_by)} more "
+                     f"than the {_money(spend.stated)} the household said it is comfortable "
+                     "spending upfront. Declared, not weighed: it does not change the "
+                     "recommendation.")
     if rec.solar is not None and rec.action != SOLAR_FIRST:
         solar = f"- Solar, for comparison: INDICATIVE payback {_about(rec.solar.payback_years)}."
         if rec.battery_action == CANNOT_ASSESS:
@@ -221,6 +313,13 @@ def _arithmetic(rec: Recommendation) -> str:
              "+ demand saving",
              "payback = (installed price − rebate) ÷ annual saving",
              f"- kWh the battery moves in a year: {_kwh(basis['kwh_shifted'])}"]
+    charged = rec.charged_from
+    if charged.total_kwh > 0:
+        lines.append(f"- what the battery charged with in a year: {_kwh(charged.total_kwh)}, of "
+                     f"which {_kwh(charged.solar_kwh)} ({charged.solar_share:.0%}) was solar "
+                     f"surplus that would otherwise have been exported and "
+                     f"{_kwh(charged.grid_kwh)} ({charged.grid_share:.0%}) was imported from "
+                     "the grid")
     if basis["kwh_shifted"] > 0:
         per_kwh_delivered = basis["r_in"] / basis["efficiency"]
         lines += [
@@ -293,7 +392,8 @@ def _revisit(rec: Recommendation, revisit: Revisit) -> str:
     names = {"battery cost": "Battery price (installed, before the rebate)",
              "feed-in tariff": "Feed-in tariff",
              "rate spread": f"{rate.capitalize()} (c/kWh added to it)",
-             "adding solar": "Adding solar (kW of panels)"}
+             "adding solar": "Adding solar (kW of panels)",
+             "adding an EV": "Adding an EV (overnight charging the bills do not contain)"}
     name = names[revisit.parameter]
     if revisit.not_applicable:
         return f"{name}: not applicable, because {revisit.not_applicable}."
@@ -304,13 +404,13 @@ def _revisit(rec: Recommendation, revisit: Revisit) -> str:
         span = (f"with anything up to {high}" if revisit.searched[0] == revisit.current
                 else f"anywhere from {low} to {high}")
         return (f"{name}: no change in {tracked} {span}, the range searched; it stays "
-                f'"{LABELS[revisit.from_action]}".')
+                f'"{LABELS[revisit.from_action]}".{_planned(revisit)}')
     at = describe_value(revisit, revisit.threshold)
     before, after = revisit.either_side
     moves = f'"{LABELS[revisit.from_action]}" to "{LABELS[revisit.to_action]}"'
     if revisit.advice_changes:
         return (f"{name}: at {at} the answer changes from {moves}. ADVICE CHANGES: YES. The "
-                f"battery's payback at {at} is {_years(after.payback_years)}.")
+                f"battery's payback at {at} is {_years(after.payback_years)}.{_planned(revisit)}")
     text = (f'{name}: at {at} the label moves from {moves}. ADVICE CHANGES: NO. The battery answer '
             f'is "{LABELS[after.battery_action]}" on both sides; its payback at {at} is '
             f"{_years(after.payback_years)}, and the warranty is "
@@ -324,6 +424,26 @@ def _revisit(rec: Recommendation, revisit: Revisit) -> str:
                  f"{_about(after.solar_payback_years)}, is {share}; solar comes first only while "
                  f"that is {rec.solar.payback_ratio:g} or less. The label moves because solar's lead "
                  f"narrows past that cut-off, not because the answer about a battery changes.")
+    return text + _planned(revisit)
+
+
+def _planned(revisit: Revisit) -> str:
+    """The household's own plan, as a named, dated condition, where it states one."""
+    plan = revisit.planned
+    if plan is None:
+        return ""
+    when = f"roughly {plan.year}" if plan.year is not None else "when is not given"
+    then = "stays" if plan.action_then == revisit.from_action else "becomes"
+    text = (f" THE HOUSEHOLD PLANS AN EV ({when}). With a typical EV's charging, "
+            f'{describe_value(revisit, plan.at)}, the answer {then} "{LABELS[plan.action_then]}".')
+    if plan.inside_stay is not None:
+        where = "inside" if plan.inside_stay else "after the end of"
+        text += (f" {plan.year} lands {where} the stated stay, which runs to about "
+                 f"{int(plan.stay_ends)}.")
+    elif plan.year is None:
+        text += " With no year given, whether it lands inside the stay cannot be said."
+    else:
+        text += " The stay was not given, so whether it lands inside it cannot be said."
     return text
 
 

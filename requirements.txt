@@ -13,5 +13,5 @@ anthropic
 # openai
 # google-genai
 
-# Stage 7 — pick whatever gets a working UI fastest.
-# streamlit
+# Stage 7 — the web app (app.py).
+streamlit

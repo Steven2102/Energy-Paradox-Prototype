@@ -18,7 +18,7 @@ degradation.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -150,3 +150,43 @@ def payback(
         net_cost=net_cost,
         payback_years=payback_years,
     )
+
+
+def show_equation(basis: Mapping[str, float | None]) -> str:
+    """The headline equation for one household: symbolic, then its figures, then
+    the result, each figure read from basis by key -- a missing one raises
+    rather than drop its line. Every line is plain arithmetic, done here.
+
+    The annual saving is shown to the cent because the payback divides by it: at
+    whole dollars a small saving would not reproduce the payback beside it."""
+    kwh, efficiency = basis["kwh_shifted"], basis["efficiency"]
+    r_out, r_in = basis["r_out"], basis["r_in"]
+    demand, saving = basis["demand_saving"], basis["annual_saving"]
+    cost, rebate, payback_years = basis["battery_cost"], basis["rebate"], basis["payback_years"]
+    so = " " * len("annual_saving ") + "= "
+    lines = ["annual_saving = kwh_shifted × (r_out − r_in / efficiency) + demand_saving"]
+    if kwh > 0:
+        lines += [
+            f"{so}{kwh:,.0f} × ({_cents(r_out)} − {_cents(r_in)} / {efficiency:.2f}) "
+            f"+ {_dollars(demand)}",
+            f"{so}{kwh:,.0f} × {_cents(r_out - r_in / efficiency)}"
+            + (f" + {_dollars(demand)}" if demand else ""),
+        ]
+    else:
+        lines.append(f"{so}0 × (no rates: the battery moved nothing) + {_dollars(demand)}")
+    lines += [
+        f"{so}{_dollars(saving, cents=True)}",
+        "",
+        "payback_years = (battery_cost − rebate) / annual_saving",
+        f"{so}({_dollars(cost)} − {_dollars(rebate)}) / {_dollars(saving, cents=True)}",
+        f"{so}{'never' if math.isinf(payback_years) else f'{payback_years:.1f} years'}",
+    ]
+    return "\n".join(lines)
+
+
+def _cents(aud_per_kwh: float) -> str:
+    return f"{aud_per_kwh * 100:.2f}c"
+
+
+def _dollars(amount: float, cents: bool = False) -> str:
+    return f"{'-' if amount < 0 else ''}${abs(amount):,.{2 if cents else 0}f}"

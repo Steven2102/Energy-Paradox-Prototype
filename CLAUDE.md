@@ -96,6 +96,8 @@ assumptions   # name, value, source, date — the ones that actually moved the r
 drivers       # which of the household's stated priorities produced this answer
 revisit_if    # computed thresholds at which `action` changes
 unmodelled    # charges present on the bill that this version does not price (rule 9)
+comfortable_spend  # declared where a recommended battery costs more than the stated
+                   #   comfortable upfront spend; never weighed, never changes the action
 
 # so the reasoning can be walked through:
 battery_action      # the decision rule's answer about a battery, before solar_first outranks it
@@ -105,17 +107,19 @@ evaluated_kwh       # the usable capacity the figures were computed for
 ```
 
 **`revisit_if` is computed, not authored.** For each parameter in a defined sweep set —
-battery cost, feed-in tariff, rate spread, adding solar — re-run the engine until `action`
-flips, and report the threshold. If it does not flip within a plausible range, say that
-instead. This is the same re-run machinery the follow-up chat needs, so it is shared work
-rather than extra work, and it is the cheapest available substitute for genuine over-time
-support.
+battery cost, feed-in tariff, rate spread, adding solar, adding an EV — re-run the engine
+until `action` flips, and report the threshold. If it does not flip within a plausible
+range, say that instead. This is the same re-run machinery the follow-up chat needs, so it
+is shared work rather than extra work, and it is the cheapest available substitute for
+genuine over-time support. Where the form says an EV is planned, the adding-an-EV result
+becomes a named, dated condition — the answer with a typical EV's charging, and whether
+the stated year lands inside the stated stay — read off the sweep, with no second run.
 
-Three parameters were cut from the sweep set deliberately: price growth rate, adding an
-EV, and expected years in the home. (The stay still enters through the decision rule, and
-`rule_tests` gives its margin.) Price growth is the one worth adding later: the reference
-household's peak rate rose 28% in a year, so "at 8% annual growth this passes in year N"
-would be a strong statement.
+Two parameters were cut from the sweep set deliberately: price growth rate and expected
+years in the home. (The stay still enters through the decision rule, and `rule_tests`
+gives its margin.) Price growth is the one worth adding later: the reference household's
+peak rate rose 28% in a year, so "at 8% annual growth this passes in year N" would be a
+strong statement.
 
 **`near_term` and `long_term` are a running cumulative position**, not adjectives. Year 1:
 −$9,000 + $237. Year 10: −$6,630. Crossover: year 38. Contrasting the two is arithmetic,
@@ -176,7 +180,7 @@ Demand charges deserve particular care, because they invert the usual result: sh
 | Source | Provides |
 |---|---|
 | **Bill upload** (PDF) | Billing period, total kWh, **consumption split by tariff window**, rates per window, daily charge, controlled load, feed-in tariff, retailer, whether solar exists |
-| **Question fields** | Household size, occupancy, appliances, system details, plans (an EV?), priorities, expected years in the home |
+| **Question fields** | Existing solar and battery, occupancy, appliances, plans (an EV?), priorities, expected years in the home, comfortable upfront spend — declared in `QUESTIONS` in `src/profile.py`, each naming the output it moves |
 | **Generator** | Distribution of consumption *within* each window |
 
 On a **time-of-use** bill, the upload gives magnitude *and* a coarse shape — window totals per billing period, across as many periods as the user supplies. The generator then only distributes within known buckets, anchored to real totals.
@@ -254,6 +258,9 @@ tests/
   test_recommend.py
   test_explain.py
   test_llm.py
+  test_profile.py
+  test_app.py
+  test_followup.py
 app.py
 run_fixtures.py       # console runner: every fixture through the engine
 pytest.ini            # puts the repo root on the test import path
@@ -298,7 +305,7 @@ Free text on the surface, a closed set of intents underneath. The LLM classifies
 | **Counterfactual** — "what if I get an EV?", "what about 13 kWh?" | Change the named parameter, **re-run the engine**, answer from the new results. Both the old and the new figure must appear in the answer. Shares its machinery with `revisit.py`. |
 | **Out of scope** — retailers, brands, anything not modelled | Decline, and say why it cannot be answered. |
 
-Counterfactual parameters are a **closed set defined in code** — add an EV, add solar, change battery size, change tariff type, change electricity price growth. A question that maps to nothing in that set is out of scope.
+Counterfactual parameters are a **closed set defined in code** (`src/followup.py`) — add an EV, add solar, change battery size. Two more are declined with the reason, never approximated: changing tariff type, because a time-of-use bill gives window totals and a flat bill gives none, so switching means re-bucketing consumption the bill does not describe; and electricity price growth, because prices are held flat and growth was cut from the sweep set. A question that maps to nothing in that set is out of scope.
 
 **Fail closed:** an unrecognised question is out of scope. The default must be to decline, not to improvise.
 

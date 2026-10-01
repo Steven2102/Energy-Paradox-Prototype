@@ -88,8 +88,12 @@ class ShapeBlock:
 
 @dataclass(frozen=True)
 class Occupancy:
-    weekday: str  # names of day shapes
-    weekend: str
+    """The day shape, by name, for a day someone is home, a weekday everyone is
+    out, and every day where the form does not say."""
+
+    home: str
+    away: str
+    not_stated: str
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,7 @@ class RevisitRanges:
     feed_in_aud_per_kwh: Range
     rate_spread_change_aud_per_kwh: Range
     added_solar_kw: Range
+    added_ev_kwh_per_year: Range
 
 
 @dataclass(frozen=True)
@@ -123,8 +128,8 @@ class Assumptions:
     dispatch_horizon_hours: float
     dispatch_horizon_hours_range: Range
     day_shapes: dict[str, tuple[ShapeBlock, ...]]
-    occupancy: dict[str, Occupancy]               # form answer -> shapes; "not_stated" if none
-    aircon_hours: dict[str, tuple[float, float]]  # form answer -> [start, end)
+    occupancy: Occupancy
+    aircon_hours: dict[str, tuple[float, float]]  # air-conditioning type -> [start, end)
     solar_latitude_deg: float
     solar_noon_hour: float
     solar_june_to_december_ratio: float
@@ -138,6 +143,9 @@ class Assumptions:
     new_solar_feed_in_aud_per_kwh: float
     new_solar_feed_in_aud_per_kwh_range: Range
     indicative_solar: IndicativeSolar
+    ev_charging_hours: tuple[float, float]  # [start, end), wrapping midnight where start > end
+    ev_kwh_per_year: float
+    ev_kwh_per_year_range: Range
     revisit_ranges: RevisitRanges
 
     @property
@@ -244,14 +252,10 @@ def parse_assumptions(raw: dict) -> Assumptions:
         raise ValueError("dispatch_horizon_hours must be positive, in whole half-hours")
 
     day_shapes = {name: _parse_day_shape(name, blocks) for name, blocks in raw["day_shapes"].items()}
-    occupancy = {answer: Occupancy(weekday=entry["weekday"], weekend=entry["weekend"])
-                 for answer, entry in raw["occupancy"].items()}
-    if "not_stated" not in occupancy:
-        raise ValueError("occupancy: needs a not_stated entry, for forms that leave it blank")
-    for answer, shapes in occupancy.items():
-        for shape in (shapes.weekday, shapes.weekend):
-            if shape not in day_shapes:
-                raise ValueError(f"occupancy {answer!r}: no day shape called {shape!r}")
+    occupancy = Occupancy(**raw["occupancy"])
+    for day, shape in vars(occupancy).items():
+        if shape not in day_shapes:
+            raise ValueError(f"occupancy {day}: no day shape called {shape!r}")
 
     assumptions = Assumptions(
         dispatch_horizon_hours=horizon,
@@ -277,10 +281,14 @@ def parse_assumptions(raw: dict) -> Assumptions:
         new_solar_feed_in_aud_per_kwh_range=_range(
             "new_solar_feed_in_aud_per_kwh_range", raw["new_solar_feed_in_aud_per_kwh_range"]),
         indicative_solar=_parse_indicative_solar(raw["indicative_solar"]),
+        ev_charging_hours=_wrapping_hours("ev_charging_hours", raw["ev_charging_hours"]),
+        ev_kwh_per_year=float(raw["ev_kwh_per_year"]),
+        ev_kwh_per_year_range=_range("ev_kwh_per_year_range", raw["ev_kwh_per_year_range"]),
         revisit_ranges=RevisitRanges(**{
             key: _range(f"revisit_ranges {key}", raw["revisit_ranges"][key])
             for key in ("battery_cost_share", "feed_in_aud_per_kwh",
-                        "rate_spread_change_aud_per_kwh", "added_solar_kw")
+                        "rate_spread_change_aud_per_kwh", "added_solar_kw",
+                        "added_ev_kwh_per_year")
         }),
     )
     _check_within("dispatch_horizon_hours", assumptions.dispatch_horizon_hours,
@@ -297,6 +305,8 @@ def parse_assumptions(raw: dict) -> Assumptions:
     _check_within("new_solar_feed_in_aud_per_kwh", assumptions.new_solar_feed_in_aud_per_kwh,
                   "new_solar_feed_in_aud_per_kwh_range",
                   assumptions.new_solar_feed_in_aud_per_kwh_range)
+    _check_within("ev_kwh_per_year", assumptions.ev_kwh_per_year,
+                  "ev_kwh_per_year_range", assumptions.ev_kwh_per_year_range)
     if not abs(assumptions.solar_latitude_deg) < 66:
         raise ValueError("solar_latitude_deg must lie outside the polar circles")
     if not 0 < assumptions.solar_june_to_december_ratio:
@@ -361,6 +371,16 @@ def _hours(where: str, pair: list) -> tuple[float, float]:
     if not (0 <= start < end <= 24 and (start * 2).is_integer() and (end * 2).is_integer()):
         raise ValueError(f"{where}: hours {pair!r} must satisfy 0 <= start < end <= 24, "
                          "on the half hour")
+    return (start, end)
+
+
+def _wrapping_hours(where: str, pair: list) -> tuple[float, float]:
+    """[start, end) on the half hour; start after end wraps past midnight."""
+    if len(pair) != 2:
+        raise ValueError(f"{where}: hours must be a [start, end] pair, got {pair!r}")
+    start, end = float(pair[0]), float(pair[1])
+    if start == end or not all(0 <= hour <= 24 and (hour * 2).is_integer() for hour in (start, end)):
+        raise ValueError(f"{where}: hours {pair!r} must be two different half hours in [0, 24]")
     return (start, end)
 
 

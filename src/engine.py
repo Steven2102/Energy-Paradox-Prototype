@@ -6,6 +6,11 @@ A pure function of (profile, tariff, config, install date) with nothing kept
 between runs, so the revisit sweeps and the follow-up chat can change one
 input and run it again.
 
+Before any of it, one guard: this version evaluates adding a battery to a home
+without one. A household that already has one cannot be assessed, so it gets
+cannot_assess with the reason (not_assessable), and evaluate() refuses it
+rather than compute a purchase payback.
+
 The decision rule (CLAUDE.md): battery_now needs the payback inside both the
 battery's warranty and the household's stated years in the home; failing
 either gives battery_not_yet. A failure decides the answer even where the
@@ -17,7 +22,7 @@ answer when the indicative solar comparison is materially better.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from src import finance
@@ -85,8 +90,32 @@ class Evaluation:
     action: str                    # battery_action, unless solar_first outranks it
 
 
+def not_assessable(profile: HouseholdProfile) -> str | None:
+    """Why this version cannot assess the household at all, or None."""
+    if profile.form.get("has_battery"):
+        size = profile.form.get("battery_kwh")
+        battery = f"a {size:g} kWh battery" if size else "a battery"
+        return (f"The household already has {battery}. This version evaluates adding a battery "
+                "to a home without one, so it has no purchase payback to give.")
+    return None
+
+
+def tariff_for(profile: HouseholdProfile, tariff: Tariff, config: Config) -> Tariff:
+    """The tariff as it applies to this household. Where it has solar but the
+    tariff sets no feed-in rate, exports earn the rate assumed for new solar,
+    which the recommendation declares."""
+    if (profile.has_solar and tariff.feed_in_tariff_aud_per_kwh is None
+            and tariff.feed_in_windows is None):
+        return replace(tariff,
+                       feed_in_tariff_aud_per_kwh=config.assumptions.new_solar_feed_in_aud_per_kwh)
+    return tariff
+
+
 def evaluate(profile: HouseholdProfile, tariff: Tariff, config: Config,
              install_date: date) -> Evaluation:
+    reason = not_assessable(profile)
+    if reason:
+        raise ValueError(f"{profile.name}: {reason}")
     year, dispatched = simulate_household(profile, tariff, config)
     return assess(profile, tariff, config, install_date, year, dispatched)
 

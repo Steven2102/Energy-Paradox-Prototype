@@ -91,9 +91,10 @@ def write_fixture(tmp_path, periods: str):
     path.write_text(textwrap.dedent("""\
         meta:
           source: test
+        from_form:
+          has_solar: false
         from_bill:
           tariff_ref: generic_flat_2026
-          has_solar: false
           annual_kwh_total: 800
           annual_kwh_by_window:
             all_day: 800

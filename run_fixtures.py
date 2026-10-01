@@ -1,6 +1,6 @@
 """Console runner: every fixture through the engine.
 
-    python run_fixtures.py [--install-date YYYY-MM-DD] [--explain]
+    python run_fixtures.py [--install-date YYYY-MM-DD] [--explain] [--questions FILE]
 
 For each household in fixtures/, prints the tariff it is on, its annual
 consumption by window, the payback calculation with every term shown
@@ -17,22 +17,28 @@ The rebate depends on the install date, which defaults to today. Pass
 --install-date to reproduce a run exactly.
 
 --explain adds each household's justification, written by the language model
-from the recommendation (src/explain.py). It calls the provider set in .env
-unless the reply is already cached; without it, nothing calls a model.
+from the recommendation (src/explain.py). --questions FILE asks every household
+each question in FILE, one per line (# starts a comment), through the follow-up
+chat (src/followup.py). Both are offline unless the command sets LLM_LIVE=1,
+which is how their replies are cached ahead of a demo:
+
+    LLM_LIVE=1 python run_fixtures.py --explain --questions FILE --install-date <demo date>
 """
 
 import argparse
 import math
 import textwrap
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 
 from src.config import Config, load_config
-from src.engine import SOLAR_FIRST, Evaluation, evaluate
+from src.engine import SOLAR_FIRST, Evaluation, evaluate, not_assessable, tariff_for
 from src.generator import Year
 from src.profile import HouseholdProfile, load_fixtures
 from src.explain import explain
+from src.followup import Reply, ask
 from src.recommend import Recommendation, quantity, recommend
 from src.revisit import Revisit, describe_value
 from src.tariff import UNMODELLED, Tariff, describe_hours, unmodelled_components
@@ -43,20 +49,27 @@ RULE = "=" * 88
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = load_config()
+    questions = read_questions(args.questions) if args.questions else []
     print_banner(config, args.install_date)
 
     results = []
     for profile in load_fixtures():
-        tariff = config.tariffs[profile.tariff_ref]
+        print_household(profile)
+        reason = not_assessable(profile)
+        if reason:
+            print(f"\nRecommendation  cannot_assess\n  {reason}")
+            continue
+        tariff = tariff_for(profile, config.tariffs[profile.tariff_ref], config)
         evaluation = evaluate(profile, tariff, config, args.install_date)
         recommendation = recommend(evaluation)
-        print_household(profile)
         print_tariff(tariff)
         print_consumption(profile, tariff, evaluation.year)
         print_payback(evaluation)
         print_recommendation(recommendation)
         if args.explain:
             print_justification(recommendation)
+        for question in questions:
+            print_reply(ask(question, recommendation, profile, config, args.install_date))
         results.append((evaluation, recommendation))
 
     print_summary(results)
@@ -76,7 +89,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="add each household's justification, written by the language model",
     )
+    parser.add_argument(
+        "--questions",
+        type=Path,
+        metavar="FILE",
+        help="ask every household each question in FILE (one per line) as a follow-up",
+    )
     return parser.parse_args(argv)
+
+
+def read_questions(path: Path) -> list[str]:
+    lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
 
 
 def print_banner(config: Config, install_date: date) -> None:
@@ -174,9 +198,16 @@ def print_consumption(profile: HouseholdProfile, tariff: Tariff, year: Year) -> 
 
 
 def describe_form(profile: HouseholdProfile) -> str:
-    occupancy = profile.form.get("occupancy_pattern") or "not stated"
-    aircon = profile.form.get("aircon_use") if profile.form.get("has_aircon") else None
-    return f"occupancy {occupancy}" + (f", air conditioning {aircon}" if aircon else "")
+    at_home = profile.form.get("home_during_the_day")
+    if at_home is None:
+        occupancy = "occupancy not stated"
+    elif at_home:
+        occupancy = "someone home during the day"
+    else:
+        days = profile.form.get("work_from_home_days")
+        occupancy = "out on weekdays" + (f", {days} worked from home" if days else "")
+    aircon = profile.form.get("aircon")
+    return occupancy + (f", {aircon} air conditioning" if aircon not in (None, "none") else "")
 
 
 def print_payback(evaluation: Evaluation) -> None:
@@ -280,6 +311,9 @@ def print_recommendation(rec: Recommendation) -> None:
     print(f"  Limited by: {limit.label}. At most {limit.max_daily_kwh:.1f} kWh delivered in a day "
           f"against {limit.capacity_kwh:g} kWh;")
     print(f"    full on {limit.days_full} days; {limit.unmet_kwh:,.0f} kWh worth serving left unmet")
+    charged = rec.charged_from
+    print(f"  Charged with {charged.total_kwh:,.0f} kWh: {charged.solar_share:.0%} solar surplus, "
+          f"{charged.grid_share:.0%} grid import")
 
     near, positions = rec.near_term, dict(rec.long_term.positions)
     last = max(positions)
@@ -297,9 +331,15 @@ def print_recommendation(rec: Recommendation) -> None:
     print("  Drivers:")
     for driver in rec.drivers:
         print(f"    {driver.priority or '(none)'}: {driver.effect}")
+    if rec.comfortable_spend is not None:
+        spend = rec.comfortable_spend
+        print(f"  Over the comfortable spend: net outlay {money(spend.net_outlay, 0)} against "
+              f"{money(spend.stated, 0)} stated, {money(spend.over_by, 0)} over")
     print("  Revisit if:")
     for revisit in rec.revisit_if:
         print(f"    {revisit.parameter:<15}{describe_revisit(revisit)}")
+        if revisit.planned is not None:
+            print(f"    {'':<15}{describe_plan(revisit)}")
     print("  Assumptions:")
     for item in rec.assumptions:
         value = quantity(item.value, item.unit)
@@ -324,6 +364,24 @@ def describe_revisit(revisit: Revisit) -> str:
     return (f"{revisit.from_action} -> {revisit.to_action} at "
             f"{describe_value(revisit, revisit.threshold)} "
             f"(now {describe_value(revisit, revisit.current)}){label_only}")
+
+
+def describe_plan(revisit: Revisit) -> str:
+    plan = revisit.planned
+    when = f"roughly {plan.year}" if plan.year is not None else "no year given"
+    stay = ("" if plan.inside_stay is None else
+            f"; {'inside' if plan.inside_stay else 'after'} the stay (to about {int(plan.stay_ends)})")
+    return (f"planned ({when}): {plan.action_then} with a typical EV "
+            f"({describe_value(revisit, plan.at)}){stay}")
+
+
+def print_reply(reply: Reply) -> None:
+    how = {"explain": "explained from the result as it stands",
+           "counterfactual": f"re-run with {reply.changed}",
+           "out_of_scope": "declined"}[reply.intent]
+    print(f"\nQ  {reply.question}\n   [{reply.intent}: {how}]")
+    for paragraph in reply.text.split("\n\n"):
+        print(textwrap.fill(paragraph, width=88, initial_indent="   ", subsequent_indent="   "))
 
 
 def print_justification(rec: Recommendation) -> None:

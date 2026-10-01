@@ -77,6 +77,23 @@ def test_7_a_recommendation_missing_a_basis_figure_is_refused():
         check_complete(replace(rec, basis={**rec.basis, "rebate": None}))
 
 
+# --------------------------------------------------------- the charge split
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_charge_split_accounts_for_all_the_energy_the_battery_charged_with(name):
+    rec = recommendation(name)
+    charged, dispatch = rec.charged_from, run(FIXTURES[name]).dispatch
+    assert charged.solar_kwh + charged.grid_kwh == pytest.approx(
+        dispatch.charge_solar.sum() + dispatch.charge_grid.sum())
+    assert charged.solar_share + charged.grid_share == pytest.approx(1)
+    # Independently of the arrays it was summed from: what it charged with, less
+    # losses, is what it delivered plus what it still holds at the year's end.
+    assert charged.total_kwh * rec.basis["efficiency"] == pytest.approx(
+        rec.basis["kwh_shifted"] + dispatch.stored[-1])
+    if name == "reference_household":  # no solar
+        assert (charged.solar_kwh, charged.grid_share) == (0, 1)
+
+
 # ----------------------------------------------------------- required test 8
 
 def rerun(name, revisit, value):
@@ -99,10 +116,13 @@ def rerun(name, revisit, value):
             replace(window, rate_aud_per_kwh=window.rate_aud_per_kwh + value)
             if window is dearest else window for window in tariff.energy_windows))
     elif revisit.parameter == "adding solar":
-        profile = replace(profile, has_solar=True, solar_kw=value, annual_solar_export_kwh=None)
+        profile = replace(profile, form={**profile.form, "has_solar": True, "solar_kw": value},
+                          annual_solar_export_kwh=None)
         if tariff.feed_in_tariff_aud_per_kwh is None:
             tariff = replace(tariff, feed_in_tariff_aud_per_kwh=(
                 CONFIG.assumptions.new_solar_feed_in_aud_per_kwh))
+    elif revisit.parameter == "adding an EV":
+        profile = replace(profile, added_ev_kwh_per_year=value)
     else:
         raise AssertionError(f"no independent re-run for {revisit.parameter!r}")
     return run(profile, tariff, config)
@@ -218,11 +238,13 @@ def test_the_answer_names_each_failed_limit_and_by_how_much():
 def test_missing_answers_are_declared_with_their_effect_never_defaulted_silently():
     rec = recommendation("reference_household")
     missing = {item.name: item for item in rec.assumptions if item.value is None}
-    assert set(missing) == {"years_expected_in_home", "occupancy_pattern", "has_aircon / aircon_use"}
+    assert set(missing) == {"years_expected_in_home", "has_battery", "home_during_the_day",
+                            "aircon"}
     assert missing["years_expected_in_home"].effect.startswith("would not change the answer")
     assert "fails the 10-year warranty on its own" in missing["years_expected_in_home"].effect
-    for name in ("occupancy_pattern", "has_aircon / aircon_use"):
+    for name in ("home_during_the_day", "aircon"):
         assert missing[name].effect.startswith("would not change the answer (re-run with")
+    assert missing["has_battery"].effect.startswith("could change the answer")
     assert [driver.priority for driver in rec.drivers] == [None]
     assert "No priorities were given" in rec.drivers[0].effect
 

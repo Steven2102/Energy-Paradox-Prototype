@@ -15,7 +15,6 @@ from_bill:
   network: Energex
   plan: BOOST
   tariff_ref: globird_boost_2026
-  has_solar: false
   has_controlled_load: true
 
   annual_kwh_total: 7359
@@ -54,21 +53,26 @@ from_bill:
     driver: overnight shoulder load (21:00-09:00) in winter months
 
 # ------------------------------------------------------------- must be asked
-# None of this is on the bill. These are the form fields.
+# Answers to the form's questions (QUESTIONS in src/profile.py); null where the
+# household has not given one. Solar is here because the form asks it; the
+# bills confirm it, showing no export.
+#
+# Not asked: household size (2 adults, 2 children, stated by the project lead).
+# The bill fixes the magnitude, so a person count moves nothing computed.
 from_form:
-  household_size: 4               # stated by the project lead: 2 adults, 2 children
-  occupancy_pattern: null         # work from home? school hours?
-  has_aircon: null
-  aircon_use: null                # the winter shoulder load needs explaining
-  controlled_load_appliance: null # hot water? pool? both?
-  has_pool: null
-  roof_orientation: null
-  roof_shading: null
-  usable_roof_area_m2: null
+  has_solar: false
+  has_battery: null
+  home_during_the_day: null       # work from home? school hours?
+  work_from_home_days: null
+  aircon: null                    # the winter shoulder load needs explaining
+  pool_pump: null
+  hot_water: electric_controlled_load  # from the bill: its controlled-load circuit carries
+                                       # 1,958 kWh a year
+  ev: null
+  ev_planned_year: null
   years_expected_in_home: null
-  max_upfront_spend_aud: null
-  considering_ev: null
-  motivation: null                # bill / independence / backup power
+  max_upfront_aud: null
+  motivation: null                # lower_bill / independence / backup_power
 
 # ------------------------------------------------------------------- warnings
 notes:

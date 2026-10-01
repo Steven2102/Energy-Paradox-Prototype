@@ -4,7 +4,8 @@
 # config/, for the sensitivity sweeps at stage 4.
 #
 # ESTIMATES, NOT SOURCED: the day shapes, air-conditioning hours, cloudiness,
-# solar comparison and sweep ranges below are the modeller's judgement.
+# solar comparison, EV charging and sweep ranges below are the modeller's
+# judgement.
 # Replace them with measured figures if any become available.
 
 # ------------------------------------------------------------------- dispatch
@@ -44,21 +45,21 @@ day_shapes:
     - {hours: [16, 21], share: 0.43}
     - {hours: [21, 24], share: 0.14}
 
-# The shape each occupancy answer uses on weekdays and at weekends. Only an
-# answer that implies a difference gets one. An unanswered question uses
-# not_stated.
+# Which shape each day takes, from the form. A day someone is home takes
+# `home`: every weekend day, every weekday where someone is home during the
+# day, and each work-from-home day (counted from Monday). Other weekdays take
+# `away`. Where the form does not say, every day takes `not_stated`.
 occupancy:
-  both_out_weekdays:      {weekday: out_during_the_day, weekend: home_all_day}
-  someone_home_most_days: {weekday: home_all_day,       weekend: home_all_day}
-  not_stated:             {weekday: home_all_day,       weekend: home_all_day}
+  home: home_all_day
+  away: out_during_the_day
+  not_stated: home_all_day
 
-# When air conditioning runs, by the form's answer. Each billing period's use
-# above the household's lowest period is treated as air conditioning and
-# spread evenly over these hours; the rest of the day follows the occupancy
-# shape.
+# When air conditioning runs, by type. Each billing period's use above the
+# household's lowest period is treated as air conditioning and spread evenly
+# over these hours; the rest of the day follows the occupancy shape.
 aircon_hours:
-  summer_evenings:    [16, 22]
-  ducted_whole_house: [12, 22]
+  split:  [16, 22]
+  ducted: [12, 22]
 
 # ---------------------------------------------------------------------- solar
 # Clear-sky days under a seasonal envelope, with cloudy days, scaled so the
@@ -115,6 +116,15 @@ indicative_solar:
   payback_ratio: 0.5
   payback_ratio_range: [0.33, 0.67]
 
+# ------------------------------------------------------------------------ EV
+# An EV the household does not have yet, for the adding-an-EV sweep: charging
+# the bills do not contain, added in these hours every day. Overnight, because
+# that is where EV charging lands (CLAUDE.md). A planned EV is read against a
+# typical one: about 12,000 km a year at about 0.17 kWh/km.
+ev_charging_hours: [22, 6]  # wraps midnight: 22:00 to 06:00
+ev_kwh_per_year: 2000
+ev_kwh_per_year_range: [1000, 4000]
+
 # ------------------------------------------------------------ revisit sweeps
 # The plausible range each revisit_if sweep searches. A threshold outside it is
 # reported as "no change within the range", not extrapolated.
@@ -123,3 +133,4 @@ revisit_ranges:
   feed_in_aud_per_kwh: [0.0, 0.15]
   rate_spread_change_aud_per_kwh: [-0.10, 0.20]  # added to the dearest window's rate
   added_solar_kw: [0.0, 10.0]
+  added_ev_kwh_per_year: [0, 5000]               # of EV charging the bills do not contain

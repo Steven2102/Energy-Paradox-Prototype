@@ -16,13 +16,21 @@ writes prose from it and adds nothing.
     drivers       which stated priorities produced the answer; none invented
     revisit_if    thresholds at which the action changes (src/revisit.py)
     unmodelled    charges on the bill this version does not price (hard rule 9)
+    comfortable_spend   declared where a recommended battery costs more than the
+                  household said it is comfortable spending upfront
 
 and, so the reasoning can be walked through: battery_action (the decision rule's
 answer about a battery, before solar_first), solar (the indicative comparison
-behind solar_first), time_of_day_source (whether the day's shape came from the
-bill or the form) and evaluated_kwh (the capacity the figures are for).
+behind solar_first), charged_from (how much of what the battery stored was solar
+surplus and how much grid import), time_of_day_source (whether the day's shape
+came from the bill or the form) and evaluated_kwh (the capacity the figures are
+for).
 
 A recommendation missing any required section is refused (required test 7).
+
+recommend_for() is the whole path from a profile. A household with a battery
+already gets NotAssessed -- cannot_assess and the reason -- and nothing is
+computed for it.
 """
 
 import math
@@ -32,10 +40,12 @@ from datetime import date
 import numpy as np
 
 from src import finance
+from src.config import Assumptions, Config
 from src.dispatch import worth_serving
 from src.engine import (BATTERY_NOW, CANNOT_ASSESS, NO_ACTION, Evaluation, RuleTest,
-                        SolarComparison, evaluate)
+                        SolarComparison, evaluate, not_assessable, tariff_for)
 from src.generator import DAYS
+from src.profile import HouseholdProfile
 from src.revisit import Revisit, revisit_if
 from src.tariff import SLOTS_PER_DAY, window_by_slot
 
@@ -114,6 +124,37 @@ class Constraint:
 
 
 @dataclass(frozen=True)
+class ChargeSources:
+    """What the battery charged with over the year, read off the dispatch: solar
+    surplus it stored instead of exporting, and energy imported to store."""
+
+    solar_kwh: float
+    grid_kwh: float
+
+    @property
+    def total_kwh(self) -> float:
+        return self.solar_kwh + self.grid_kwh
+
+    @property
+    def solar_share(self) -> float:
+        return self.solar_kwh / self.total_kwh if self.total_kwh else 0.0
+
+    @property
+    def grid_share(self) -> float:
+        return self.grid_kwh / self.total_kwh if self.total_kwh else 0.0
+
+
+@dataclass(frozen=True)
+class ComfortableSpend:
+    """A recommended battery costs more upfront than the household said it is
+    comfortable spending. Declared, never weighed: it does not change the action."""
+
+    stated: float      # $
+    net_outlay: float  # $, installed price less the rebate
+    over_by: float     # $
+
+
+@dataclass(frozen=True)
 class Recommendation:
     household: str
     action: str
@@ -128,15 +169,38 @@ class Recommendation:
     drivers: tuple[Driver, ...]
     revisit_if: tuple[Revisit, ...]
     unmodelled: dict[str, str]
+    comfortable_spend: ComfortableSpend | None
     # So the reasoning can be walked through.
     battery_action: str
     solar: SolarComparison | None
+    charged_from: ChargeSources
     time_of_day_source: str
     evaluated_kwh: float
 
 
+@dataclass(frozen=True)
+class NotAssessed:
+    """A household this version cannot assess at all: cannot_assess and the
+    reason, and no figures, because nothing was computed for it."""
+
+    household: str
+    reason: str
+    action: str = CANNOT_ASSESS
+
+
 class IncompleteRecommendation(ValueError):
     pass
+
+
+def recommend_for(profile: HouseholdProfile, config: Config,
+                  install_date: date) -> "Recommendation | NotAssessed":
+    """The whole path for one household: the guard, then the engine and the
+    recommendation."""
+    reason = not_assessable(profile)
+    if reason:
+        return NotAssessed(household=profile.name, reason=reason)
+    tariff = tariff_for(profile, config.tariffs[profile.tariff_ref], config)
+    return recommend(evaluate(profile, tariff, config, install_date))
 
 
 def recommend(evaluation: Evaluation) -> Recommendation:
@@ -161,8 +225,11 @@ def recommend(evaluation: Evaluation) -> Recommendation:
         drivers=_drivers(evaluation),
         revisit_if=revisit_if(evaluation),
         unmodelled=evaluation.unmodelled,
+        comfortable_spend=_comfortable_spend(evaluation),
         battery_action=evaluation.battery_action,
         solar=evaluation.solar,
+        charged_from=ChargeSources(solar_kwh=float(evaluation.dispatch.charge_solar.sum()),
+                                   grid_kwh=float(evaluation.dispatch.charge_grid.sum())),
         time_of_day_source=evaluation.year.time_of_day_source,
         evaluated_kwh=evaluation.battery_kwh,
     )
@@ -229,6 +296,15 @@ def _not_priced(evaluation: Evaluation) -> tuple[NotPriced, ...]:
             f"The payback ({_years(payback.payback_years)}) runs past the "
             f"{batteries.warranty_years:g}-year warranty, so the battery may not last long "
             "enough to break even.",
+            None))
+    if evaluation.profile.form.get("ev") == "planning":
+        year = evaluation.profile.form.get("ev_planned_year")
+        when = f"roughly {year}" if year else "when is not given"
+        items.append(NotPriced(
+            "a planned EV",
+            f"The EV the household plans ({when}) is not in these bills, so the figures leave "
+            "its charging out. 'Adding an EV' among what would change the assessment says what "
+            "it would do.",
             None))
     for component, description in evaluation.unmodelled.items():
         items.append(NotPriced(
@@ -340,16 +416,15 @@ def _assumptions(evaluation: Evaluation) -> tuple[Assumption, ...]:
                        f"{assumptions.cloudy_day_output:.0%} output, evenly spaced (optimistic)",
                        "config/assumptions.yaml", None),
         ]
+        configured = config.tariffs[profile.tariff_ref]
+        if configured.feed_in_tariff_aud_per_kwh is None and configured.feed_in_windows is None:
+            items.append(Assumption(
+                "feed-in tariff", evaluation.tariff.feed_in_tariff_aud_per_kwh,
+                "config/assumptions.yaml: the rate for new solar, because the tariff states none",
+                None, range=assumptions.new_solar_feed_in_aud_per_kwh_range, unit="c/kWh"))
     if evaluation.year.time_of_day_source == "form":
-        occupancy = profile.form.get("occupancy_pattern") or "not_stated"
-        weekday = assumptions.occupancy[occupancy].weekday
-        daytime = next(b for b in assumptions.day_shapes[weekday] if b.share_range is not None)
-        items.append(Assumption(
-            "time of day, from the form (the bill has no window split)",
-            f"{occupancy}: weekdays use the {weekday} shape, "
-            f"{daytime.share:.0%} of the day between {daytime.hours[0]:g}:00 and "
-            f"{daytime.hours[1]:g}:00",
-            "config/assumptions.yaml", None, range=daytime.share_range, unit="%"))
+        items.append(_time_of_day(profile, assumptions))
+    items += _unplaced_use(profile)
     if evaluation.solar is not None:
         indicative = assumptions.indicative_solar
         items.append(Assumption(
@@ -362,6 +437,44 @@ def _assumptions(evaluation: Evaluation) -> tuple[Assumption, ...]:
     return tuple(items) + _missing_answers(evaluation)
 
 
+def _time_of_day(profile: HouseholdProfile, assumptions: Assumptions) -> Assumption:
+    """What the form said about the day, for a bill that cannot say it."""
+    at_home = profile.form.get("home_during_the_day")
+    shapes = assumptions.occupancy
+    if at_home is None:
+        said, shape = "occupancy not stated: every day uses", shapes.not_stated
+    elif at_home:
+        said, shape = "someone home during the day: every day uses", shapes.home
+    elif profile.form.get("work_from_home_days"):
+        said = (f"out during the day, but {profile.form['work_from_home_days']} weekdays worked "
+                "from home: the other weekdays use")
+        shape = shapes.away
+    else:
+        said, shape = "out during the day on weekdays: weekdays use", shapes.away
+    daytime = next(block for block in assumptions.day_shapes[shape] if block.share_range is not None)
+    return Assumption(
+        "time of day, from the form (the bill has no window split)",
+        f"{said} the {shape} shape, {daytime.share:.0%} of the day between "
+        f"{daytime.hours[0]:g}:00 and {daytime.hours[1]:g}:00",
+        "config/assumptions.yaml", None, range=daytime.share_range, unit="%")
+
+
+def _unplaced_use(profile: HouseholdProfile) -> list[Assumption]:
+    """Use the form puts on the main circuit whose hours the generator does not
+    model: it is in the bill's totals, spread like the rest of the day."""
+    form = profile.form
+    unplaced = [
+        ("pool pump running hours", "a pool pump on the main circuit",
+         form.get("pool_pump") == "main_circuit"),
+        ("hot water heating hours", "electric hot water on the main circuit",
+         form.get("hot_water") == "electric_main_circuit"),
+        ("EV charging hours", "an EV already owned", form.get("ev") == "have"),
+    ]
+    return [Assumption(name, "not modelled: the use is in the bill's totals, but follows the "
+                             "day's shape rather than its own hours", f"form: {said}", None)
+            for name, said, present in unplaced if present]
+
+
 def _missing_answers(evaluation: Evaluation) -> tuple[Assumption, ...]:
     """Every form answer the engine needed but did not get, with whether it would
     change the answer. Nothing is defaulted silently."""
@@ -371,21 +484,37 @@ def _missing_answers(evaluation: Evaluation) -> tuple[Assumption, ...]:
         missing.append(Assumption(
             "years_expected_in_home", None, "form (not answered)", None,
             effect=_stay_effect(evaluation)))
-    if form.get("occupancy_pattern") is None:
+    if form.get("has_battery") is None:
         missing.append(Assumption(
-            "occupancy_pattern", None,
-            "form (not answered): the generator used the not_stated day shapes", None,
-            effect=_alternatives_effect(evaluation, [
-                {"occupancy_pattern": answer}
-                for answer in evaluation.config.assumptions.occupancy if answer != "not_stated"])))
-    if form.get("has_aircon") is None:
+            "has_battery", None, "form (not answered): assessed as a home without a battery", None,
+            effect="could change the answer: a battery already installed gives cannot_assess, "
+                   "since this version evaluates adding one"))
+    if form.get("home_during_the_day") is None:
         missing.append(Assumption(
-            "has_aircon / aircon_use", None,
-            "form (not answered): no air conditioning was placed", None,
+            "home_during_the_day", None,
+            "form (not answered): every day took the not_stated day shape", None,
             effect=_alternatives_effect(evaluation, [
-                {"has_aircon": True, "aircon_use": use}
-                for use in evaluation.config.assumptions.aircon_hours])))
+                {"home_during_the_day": True},
+                {"home_during_the_day": False, "work_from_home_days": 0}])))
+    elif form.get("home_during_the_day") is False and form.get("work_from_home_days") is None:
+        missing.append(Assumption(
+            "work_from_home_days", None, "form (not answered): no weekday worked from home", None,
+            effect=_alternatives_effect(evaluation, [
+                {"work_from_home_days": days} for days in (2, 5)])))
+    if form.get("aircon") is None:
+        missing.append(Assumption(
+            "aircon", None, "form (not answered): no air conditioning was placed", None,
+            effect=_alternatives_effect(evaluation, [
+                {"aircon": kind} for kind in evaluation.config.assumptions.aircon_hours])))
     return tuple(missing)
+
+
+def _comfortable_spend(evaluation: Evaluation) -> ComfortableSpend | None:
+    stated = evaluation.profile.form.get("max_upfront_aud")
+    outlay = evaluation.payback.net_cost
+    if evaluation.action != BATTERY_NOW or stated is None or outlay <= stated:
+        return None
+    return ComfortableSpend(stated=stated, net_outlay=outlay, over_by=outlay - stated)
 
 
 def _stay_effect(evaluation: Evaluation) -> str:

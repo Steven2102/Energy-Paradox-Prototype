@@ -28,13 +28,14 @@ NOT_IN_THE_RECOMMENDATION = [
     "What would a 15 kWh battery cost me?",
 ]
 
-# Telling the household its answer changes...
+# Telling the household its answer changes -- a few words may come between
+# ("your answer would then change")...
 CHANGE_OF_ANSWER = re.compile(
-    r"\b(answer|recommendation|advice)\s+(would\s+|will\s+|could\s+)?"
-    r"(changes?|switch(es)?|flips?|becomes?)\b"
-    r"|\b(changes?|switch(es)?|flips?|turns?)\s+(the|your)\s+(answer|recommendation|advice)\b",
+    r"\b(?:answer|recommendation|advice)\b((?:\s+\w+(?:'\w+)?){0,3}?)\s+"
+    r"(?:changes?|switch(?:es)?|flips?|becomes?)\b"
+    r"|\b(?:changes?|switch(?:es)?|flips?|turns?)\s+(?:the|your)\s+(?:answer|recommendation|advice)\b",
     re.IGNORECASE)
-# ...unless the sentence has already said it doesn't.
+# ...unless the sentence has already said, or says in between, that it doesn't.
 NEGATION = re.compile(r"\b(not|no|never|neither|nor|nothing|none)\b|n't\b", re.IGNORECASE)
 # Prose for a homeowner: no lists, bold or headings.
 NOT_PROSE = re.compile(r"^\s*([-*•]|\d+[.)]|#)\s|\*\*", re.MULTILINE)
@@ -62,10 +63,17 @@ def check_justification(rec, prose):
             assert STATED_PRIORITY[item.stated_priority] in text
     for component in rec.unmodelled:
         assert f"{component} charge" in text and "partial" in text
-    # The revisit thresholds.
+    # The revisit thresholds, and the household's own plan where it states one.
     for revisit in rec.revisit_if:
         if revisit.threshold is not None:
             assert describe_value(revisit, revisit.threshold).lstrip("+-") in prose
+        if revisit.planned is not None:
+            assert any(words in text for words in ("planned ev", "plan an ev", "planning an ev"))
+    # Where the battery's energy came from, named.
+    if rec.charged_from.grid_share == 1:
+        assert "grid" in text
+    if rec.charged_from.solar_share == 1:
+        assert "surplus" in text or "exported" in text
     # How much weight it bears.
     if rec.solar is not None:
         assert "indicative" in text
@@ -76,27 +84,27 @@ def check_justification(rec, prose):
 
 def check_label_only_thresholds(rec, prose):
     """A threshold that moves the label but not the advice is never called a change of
-    answer; and where no threshold changes the advice, nothing is."""
+    answer: not in a sentence giving it, nor in the sentence after one."""
     sentences = re.split(r"(?<=[.!?])\s+", straight_quotes(prose))
     for revisit in rec.revisit_if:
         if revisit.advice_changes is False:
             figure = describe_value(revisit, revisit.threshold)
-            mentions = [sentence for sentence in sentences if figure in sentence]
+            mentions = [index for index, sentence in enumerate(sentences) if figure in sentence]
             assert mentions, f"{figure} is not mentioned"
-            for sentence in mentions:
-                assert not claims_a_change_of_answer(sentence), sentence
-    if not any(revisit.advice_changes for revisit in rec.revisit_if):
-        for sentence in sentences:
-            assert not claims_a_change_of_answer(sentence), sentence
+            for index in mentions:
+                for sentence in sentences[index:index + 2]:
+                    assert not claims_a_change_of_answer(sentence), sentence
 
 
 def claims_a_change_of_answer(sentence):
     """A negation earlier in the sentence ("would not change the answer", "neither
-    changes the answer") says the opposite; a quoted label ("Battery not yet") is not one."""
-    match = CHANGE_OF_ANSWER.search(sentence)
-    if not match:
-        return False
-    return not NEGATION.search(re.sub(r'"[^"]*"', "", sentence[:match.start()]))
+    changes the answer") or between its words ("the answer would not change") says
+    the opposite; a quoted label ("Battery not yet") is not one."""
+    for match in CHANGE_OF_ANSWER.finditer(sentence):
+        before = re.sub(r'"[^"]*"', "", sentence[:match.start()])
+        if not NEGATION.search(before) and not NEGATION.search(match.group(1) or ""):
+            return True
+    return False
 
 
 def straight_quotes(prose):
@@ -124,7 +132,8 @@ def test_a_figure_the_recommendation_does_not_contain_is_declined_not_invented(n
 
 
 def test_a_reply_with_a_figure_not_in_its_input_is_refused(monkeypatch):
-    monkeypatch.setattr(llm, "complete", lambda system, user: "A 15 kWh battery costs $14,960.")
+    monkeypatch.setattr(llm, "complete",
+                        lambda system, user, **context: "A 15 kWh battery costs $14,960.")
     with pytest.raises(UntraceableFigure, match="14,960"):
         answer(recommendation("reference_household"), "What would a 15 kWh battery cost me?")
 

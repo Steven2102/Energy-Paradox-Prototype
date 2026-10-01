@@ -11,6 +11,18 @@ the user message -- so a rehearsed demo never waits on the network, and tests
 replay recorded replies without calling anyone. The key leaves out the provider
 and the model: after switching either, clear the cache (or re-record) to get
 fresh replies. Each cached reply records the model that wrote it.
+
+Offline by default: only cached replies, and a miss raises NotCached at once,
+naming what was asked about and the cache key. The provider is reached only
+when the command itself sets LLM_LIVE=1 (read from the environment, never from
+.env) -- which is how the cache is warmed for a demo:
+
+    LLM_LIVE=1 python run_fixtures.py --explain --install-date <the demo's date>
+
+A caller can also go live for one call (live=True): the app does that for
+follow-up questions when its "Answer new questions live" switch is on, and for
+nothing else. The tests replay tests/recordings/ instead; LLM_RECORD=1 records
+what is missing.
 """
 
 import hashlib
@@ -23,7 +35,9 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = ROOT / ".llm_cache"  # gitignored; the tests point it at tests/recordings/
-LIVE = True                      # False: only cached replies, and a miss is an error
+LIVE = os.environ.get("LLM_LIVE") == "1"  # off: only cached replies, and a miss raises
+WARM = ("LLM_LIVE=1 python run_fixtures.py --explain --install-date <the demo's date>, adding "
+        "--questions <file> for rehearsed follow-up questions")
 
 MAX_TOKENS = 8192  # the reply and the model's thinking, which counts against it
 TIMEOUT_SECONDS = 60
@@ -33,17 +47,29 @@ class LLMError(RuntimeError):
     """The model could not be asked, or its reply cannot be used."""
 
 
-def complete(system: str, user: str) -> str:
-    """The model's reply to one system prompt and one user message."""
-    path = CACHE_DIR / f"{cache_key(system, user)}.json"
+class NotCached(LLMError):
+    """Offline, and no reply is cached for this input."""
+
+    def __init__(self, about: str, key: str):
+        self.about, self.key = about, key
+        super().__init__(
+            f"No cached reply for {about} (cache key {key}) in {CACHE_DIR}, and offline mode "
+            f"is on, so the provider was not called. Warm the cache: {WARM}. (The tests "
+            "replay tests/recordings/: LLM_RECORD=1 python -m pytest tests/test_explain.py)")
+
+
+def complete(system: str, user: str, *, about: str = "this input", live: bool = False) -> str:
+    """The model's reply to one system prompt and one user message. `about` names
+    what was asked, for the error when offline and nothing is cached; `live` lets
+    this one call reach the provider when LLM_LIVE is not set."""
+    key = cache_key(system, user)
+    path = CACHE_DIR / f"{key}.json"
     if path.exists():
         cached = json.loads(path.read_text(encoding="utf-8"))
         if cached["system"] == system and cached["user"] == user:
             return cached["reply"]
-    if not LIVE:
-        raise LLMError(f"no cached reply for this input in {CACHE_DIR}, and live calls are off. "
-                       "Tests replay tests/recordings/: record a missing reply with "
-                       "LLM_RECORD=1 python -m pytest tests/test_explain.py")
+    if not (LIVE or live):
+        raise NotCached(about, key)
     provider, model, api_key = _settings()
     reply = PROVIDERS[provider](system, user, model=model, api_key=api_key)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)

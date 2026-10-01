@@ -34,8 +34,24 @@ cp .env.example .env        # add an API key from stage 6 onwards
 
 ```bash
 python run_fixtures.py      # every fixture through the engine, printed to the console
+streamlit run app.py        # the web app
 pytest
 ```
+
+Explanations are offline by default: the app and `run_fixtures.py --explain` show
+only replies already cached in `.llm_cache/`, and name the command below when one
+is missing. Before a demo, warm the cache once with an API key in `.env`, giving the
+**demo's date** — the install date sets the rebate, the rebate is in every
+explanation's input, and the cache is keyed on that input:
+
+```bash
+LLM_LIVE=1 python run_fixtures.py --explain --questions questions.txt --install-date 2026-10-12
+```
+
+`--questions` takes a file of rehearsed follow-up questions, one per line (`#` starts
+a comment), and caches the answers for all three households. In the app, the sidebar
+switch **Answer new questions live** (off by default) lets a question nobody rehearsed
+go to the provider; the explanation stays as written ahead of time either way.
 
 ## Layout
 

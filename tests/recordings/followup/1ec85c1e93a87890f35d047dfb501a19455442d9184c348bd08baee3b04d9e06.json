@@ -1,0 +1,8 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-5-5",
+  "recorded": "2026-09-30",
+  "system": "You sort one question a household asks about its home-battery assessment into one of three kinds. Reply with a single JSON object and nothing else: no code fence, no explanation.\n\n{\"intent\": \"explain\"}\n  The question asks about the assessment as it stands: why, how, what a figure means, what was assumed, what is left out.\n\n{\"intent\": \"counterfactual\", \"parameter\": P, \"value\": V}\n  The question asks what would happen if one of these changed. P is one of:\n  \"add_ev\": the household gets an electric vehicle. V is the EV's charging in kWh a year, only if the question states it in kWh a year; otherwise null.\n  \"add_solar\": the household adds solar panels. V is the system's size in kW, only if the question states it in kW; otherwise null.\n  \"battery_size\": a battery of a different size. V is its usable capacity in kWh, only if the question states it in kWh; otherwise null.\n\n{\"intent\": \"out_of_scope\", \"topic\": T}\n  Anything else. T is one of:\n  \"tariff_type\": moving to a different kind of tariff, such as flat, time-of-use or demand.\n  \"price_growth\": electricity prices rising or falling over time.\n  \"retailer_or_brand\": retailers, brands, products, installers, or where to buy.\n  \"other\": anything else.\n\nCopy a number exactly as the question states it; never convert or calculate one. If the question fits none of these, or you are not sure, reply {\"intent\": \"out_of_scope\", \"topic\": \"other\"}.",
+  "user": "What if prices go up 10% a year?",
+  "reply": "{\"intent\": \"out_of_scope\", \"topic\": \"price_growth\"}"
+}

@@ -250,7 +250,7 @@ def test_each_household_charges_from_the_energy_that_is_cheapest_for_it(name, so
 def test_a_flat_tariff_without_solar_shifts_nothing():
     # No special case: with every half-hour priced the same, no earlier energy
     # is ever cheaper, so the battery finds nothing worth moving.
-    without_solar = replace(FIXTURES["household_b"], has_solar=False, solar_kw=None,
+    without_solar = replace(FIXTURES["household_b"].with_answers(has_solar=False, solar_kw=None),
                             annual_solar_export_kwh=None)
     result = run(year_of(without_solar))
     assert result.kwh_shifted == 0
